@@ -31,7 +31,7 @@ Real torchal package for surgical video phase classification (CholecT50): CLI, p
 ## Running an experiment
 
 - `uv run phase-cls train configs/default.yaml` runs the whole lifecycle in one run (`src/phase_classification/run.py`): train → per-epoch validation → test on the held-out test split.
-- Model architecture is selected by `model.name` through the registry `models/registry.py` (`tcn`/`cnn`/`phase_classifier` → `models/net.py`); `model.params` carries architecture knobs.
+- Model architecture is selected by `model.name` through the registry `models/registry.py` (`tcn`/`cnn`/`phase_classifier` → `models/net.py` `PhaseClassifier`; `resnet18` → `ResNet18Classifier` with optional `pretrained`/`freeze_backbone` params); `model.params` carries architecture knobs.
 - Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard).
 - MLflow logging per run:
   - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
