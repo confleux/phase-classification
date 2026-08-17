@@ -11,12 +11,13 @@ A single :func:`run_training` call performs the complete lifecycle for one run:
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
-import mlflow
 import torch
 from torch.utils.data import DataLoader
 
+import mlflow
 from phase_classification.config import ExperimentConfig
 from phase_classification.data.dataloaders import (
     DatasetUnavailableError,
@@ -83,11 +84,29 @@ def _epoch_metrics(trainer: Trainer, loader, prefix: str) -> dict[str, float]:
     return {f"{prefix}_{k}": v for k, v in metrics.items()}
 
 
+def _end_mlflow_run(status: str) -> None:
+    """End the active MLflow run with the given status (if any run is active)."""
+    try:
+        if mlflow.active_run() is not None:
+            mlflow.end_run(status=status)
+    except mlflow.exceptions.MlflowException as exc:
+        print(f"warning: failed to finalize MLflow run ({exc})", file=sys.stderr)
+
+
 def run_training(cfg: ExperimentConfig) -> dict[str, float]:
     """Execute the full training/validation/test lifecycle, logging to MLflow."""
     if cfg.validation.batch_size:
         raise RunError("validation.batch_size is not wired to the training loop yet.")
     loader_cfg = cfg.dataloader
+    _start_mlflow(cfg)
+    try:
+        return _run_lifecycle(cfg, loader_cfg)
+    except Exception:
+        _end_mlflow_run("FAILED")
+        raise
+
+
+def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
     try:
         dl = build_dataloaders(cfg)
     except DatasetUnavailableError as exc:
@@ -106,8 +125,6 @@ def run_training(cfg: ExperimentConfig) -> dict[str, float]:
         mixed_precision=cfg.runtime.mixed_precision,
         higher_is_better=higher_better,
     )
-
-    _start_mlflow(cfg)
 
     best_metric = float("-inf") if higher_better else float("inf")
     best_state = None
@@ -164,6 +181,7 @@ def run_training(cfg: ExperimentConfig) -> dict[str, float]:
 
     _save_model_to_mlflow(cfg, model, best_state)
 
+    _end_mlflow_run("FINISHED")
     return test_metrics
 
 

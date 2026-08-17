@@ -6,6 +6,7 @@ Builds ``torch.utils.data.DataLoader`` objects over the datasets produced by
 """
 
 from dataclasses import dataclass
+from functools import partial
 
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -17,6 +18,11 @@ from phase_classification.loader import check_paths
 
 class DatasetUnavailableError(Exception):
     """Raised when the dataset root is required but is missing on disk."""
+
+
+def _seed_worker(worker_id: int, seed: int) -> None:
+    """Per-worker RNG seeding (module-level so it can be pickled by workers)."""
+    torch.manual_seed(seed + worker_id)
 
 
 @dataclass
@@ -60,10 +66,8 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     train_ds, val_ds, test_ds = dataset.build()
     seed = cfg.runtime.seed
 
-    def worker_init_fn(worker_id: int) -> None:
-        torch.manual_seed(seed + worker_id)
-
     torch.manual_seed(seed)
+    worker_init_fn = partial(_seed_worker, seed=seed)
     dl_cfg = cfg.dataloader
     return DataLoaders(
         train=_make_loader(
