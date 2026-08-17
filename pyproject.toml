@@ -1,7 +1,29 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "phase-classification"
 version = "0.1.0"
-description = "Add your description here"
+description = "Surgical video phase classification (CholecT50)"
 readme = "README.md"
 requires-python = ">=3.14"
-dependencies = []
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+]
+
+[project.scripts]
+phase-cls = "phase_classification.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/phase_classification"]
+
+[tool.uv]
+package = true

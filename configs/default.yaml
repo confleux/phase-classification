@@ -1,0 +1,75 @@
+# Baseline example config for surgical video phase classification (CholecT50).
+# Only fields you want to override are required; everything else falls back to
+# the schema defaults. All fields are validated by the pydantic schema.
+
+project:
+  name: phase-classification
+  seed: 42
+  output_dir: outputs
+  save_checkpoints: true
+
+dataset:
+  dataset_variant: cholect50-crossval
+  root_dir: /data/cholect50
+  test_fold: 1
+  sequence_length: 1
+  augmentations: [original]
+  image_size: [256, 448]
+  normalize: true
+  # video_ids: null   # optional explicit override
+
+dataloader:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
+  drop_last: false
+
+model:
+  # Loose coupling: name selects the architecture in the model registry; params
+  # carry architecture-specific knobs (backbone, depths, patch_size, ...) as-is.
+  name: tcn
+  params: {}
+  # CholecT50 label space; override only for a different dataset/variant.
+  num_classes:
+    phase: 7
+    tool: 6
+    verb: 10
+    target: 15
+    triplet: 100
+
+training:
+  epochs: 50
+  batch_size: 32
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0
+  momentum: 0.9
+  scheduler: none
+  step_size: 10
+  gamma: 0.1
+  loss: cross_entropy
+  heads: [phase]
+  grad_clip_norm: null
+
+validation:
+  metrics: [accuracy, accuracy_per_phase]
+  checkpoint_path: null
+  top_k: 1
+  batch_size: null
+
+mlflow:
+  tracking_uri: null
+  experiment_name: phase_classification
+  run_name: null
+  tags: {}
+  log_artifacts_to: null
+
+runtime:
+  device: auto
+  cuda_device: null
+  mixed_precision: fp32
+  seed: 42
+  num_workers: 4
