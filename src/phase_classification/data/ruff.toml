@@ -1,0 +1,3 @@
+# Per-directory Ruff config: cholec_t50.py is a vendored, unmodified reference
+# loader and must stay byte-exact (not linted/formatted) per project policy.
+exclude = ["cholec_t50.py"]

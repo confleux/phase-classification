@@ -17,6 +17,9 @@ from phase_classification.loader import ConfigLoadError, check_paths, load_confi
 
 PROG = "phase-cls"
 
+# Label head order returned by the vendored CholecT50 loader.
+LABEL_KEYS = ("triplet", "tool", "verb", "target", "phase")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -46,6 +49,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format.",
     )
     p_inspect.set_defaults(func=cmd_inspect)
+
+    p_dl = sub.add_parser(
+        "build-dataloaders",
+        help="Build dataloaders for a config and print per-split sizes and a first batch shape.",
+    )
+    p_dl.add_argument("config", help="Path to a YAML config file.")
+    p_dl.set_defaults(func=cmd_build_dataloaders)
 
     return parser
 
@@ -79,6 +89,43 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         import yaml
 
         print(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
+
+
+def cmd_build_dataloaders(args: argparse.Namespace) -> None:
+    cfg = _load(args.config)
+    from phase_classification.data import build_dataloaders
+    from phase_classification.data.dataloaders import DatasetUnavailableError
+
+    try:
+        dl = build_dataloaders(cfg)
+    except DatasetUnavailableError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(3) from exc
+
+    from torch.utils.data import DataLoader as TorchDataLoader
+
+    for name in ("train", "val", "test"):
+        loader = getattr(dl, name)
+        ds = loader.dataset
+        if isinstance(
+            ds, list
+        ):  # reference loader stores test as a list of video datasets
+            print(f"{name}: {len(ds)} video sub-datasets")
+            first, *_ = ds
+            images, labels = next(iter(TorchDataLoader(first, batch_size=1)))
+        else:
+            images, labels = next(iter(loader))
+            print(f"{name}: {len(ds)} samples", end="")
+            first = None
+        shapes = ", ".join(
+            f"{key}: {tuple(t.shape)}"
+            for key, t in zip(LABEL_KEYS, labels, strict=False)
+        )
+        if first is None:
+            print(f", batch={tuple(images.shape)}")
+        else:
+            print(f", first batch={tuple(images.shape)}")
+        print(f"    labels {shapes}")
 
 
 def main(argv: list[str] | None = None) -> None:
