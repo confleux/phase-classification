@@ -55,7 +55,7 @@ training:
   grad_clip_norm: null
 
 validation:
-  metrics: [accuracy, accuracy_per_phase]
+  metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
   checkpoint_path: null
   top_k: 1
   batch_size: null

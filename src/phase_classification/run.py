@@ -203,11 +203,11 @@ def _is_better(value: float, best: float, higher_better: bool) -> bool:
 
 
 _HIGHER_BETTER = {
-    "accuracy",
-    "accuracy_per_phase",
-    "f1_macro",
-    "f1_micro",
     "jaccard",
+    "f1_macro",
+    "f1_per_class",
+    "mean_accuracy",
+    "accuracy_per_class",
     "edit_score",
 }
 

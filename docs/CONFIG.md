@@ -172,14 +172,16 @@ training:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `metrics` | list[str] | `["accuracy", "accuracy_per_phase"]` | `accuracy`, `accuracy_per_phase`, `f1_macro`, `f1_micro`, `jaccard`, `edit_score` |
+| `metrics` | list[str] | all six below | `jaccard`, `f1_macro`, `f1_per_class`, `mean_accuracy`, `accuracy_per_class`, `edit_score` |
 | `checkpoint_path` | Path \| null | `null` | *(not wired)* |
 | `top_k` | int | `1` | *(not wired)* |
 | `batch_size` | int \| null | `null` | **raises `RunError` if set** (not wired) |
 
-Each metric is computed per head and reported as `<head>_<metric>`
-(e.g. `phase_accuracy`). Exactly one metric should be listed first to serve as the
-"primary val metric" used for best-checkpoint selection.
+Each metric is computed per head; aggregates are reported as `<head>_<metric>`
+(e.g. `phase_jaccard`) while per-class metrics expand to
+`<head>_<metric>_<i>` per class (e.g. `phase_f1_class_0`). Exactly one aggregate
+metric should be listed first to serve as the "primary val metric" used for
+best-checkpoint selection.
 
 ---
 
@@ -246,7 +248,7 @@ training:
   loss: cross_entropy
   heads: [phase]
 validation:
-  metrics: [accuracy, accuracy_per_phase]
+  metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
 mlflow:
   tracking_uri: http://localhost:5000
   experiment_name: phase_classification
@@ -273,7 +275,7 @@ training:
 dataloader:
   batch_size: 64
 validation:
-  metrics: [accuracy, f1_macro, f1_micro]
+  metrics: [jaccard, f1_macro, mean_accuracy, edit_score]
 runtime:
   device: cuda
   mixed_precision: fp16

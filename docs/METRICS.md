@@ -20,27 +20,36 @@ over the head's `num_classes` is accumulated across the whole split, then reduce
 > - Multi-label heads (`tool`, `target`, `triplet`) carry more than one active
 >   class per frame; argmax keeps only the first, so per-class metrics on those
 >   heads underestimate the true value.
-> - A class that never appears in a split contributes **0** to
->   `accuracy_per_phase` / `f1_macro` / `jaccard` (its TP/FN/FPs are all 0).
->   This lower-bounds these metrics when a class is absent from a small split.
+> - A class that never appears in a split contributes **0** to every aggregate
+>   and per-class metric below (its TP/FN/FPs are all 0). This lower-bounds the
+>   aggregates when a class is absent from a small split.
 
 ## Available metrics
 
 Referenced by name in `validation.metrics` (any order; the first listed is the
 "primary val metric" used for best-checkpoint selection).
 
+Where `tp` = diagonal of the confusion matrix (correctly predicted per class),
+`fp` = `col_sums − tp`, `fn` = `row_sums − tp`.
+
+### Aggregate metrics
+
 | Config name | Definition | Range | Notes |
 |---|---|---|---|
-| `accuracy` | `correct / total` | 0–1 | fraction of samples where `argmax(pred) == argmax(target)` |
-| `accuracy_per_phase` | mean of per-class recall `tp/(tp+fn)` over all `n` classes | 0–1 | *balanced accuracy*; absent class → 0 |
-| `f1_macro` | mean of per-class F1 `2·P·R/(P+R)` | 0–1 | each class weighted equally; absent class → 0 |
-| `f1_micro` | `Σtp / (Σtp + 0.5·(Σfp + Σfn))` | 0–1 | **equals `accuracy`** for single-label per-sample targets |
-| `jaccard` | mean of per-class IoU `tp/(tp+fn+fp)` | 0–1 | *mean intersection-over-union*; absent class → 0 |
+| `jaccard` | mean of per-class IoU `tp/(tp+fn+fp)` | 0–1 | mean intersection-over-union; absent class → 0 |
+| `f1_macro` | mean of per-class F1 `2·P·R/(P+R)` | 0–1 | F1@Macro; each class weighted equally; absent class → 0 |
+| `mean_accuracy` | mean of per-class accuracy `tp/(tp+fn)` over all `n` classes | 0–1 | *balanced accuracy*; absent class → 0 |
 | `edit_score` | `1 − Levenshtein(pred, target) / max(len(pred), len(target))` | 0–1 | **sequence-level**; higher = closer order/transitions (see below) |
 
-Where `tp` = diagonal of the confusion matrix (correctly predicted per class),
-`fp` = `col_sums − tp`, `fn` = `row_sums − tp`, all summed over classes when
-averaging.
+### Per-class metrics
+
+| Config name | Definition | Emits (per head) |
+|---|---|---|
+| `f1_per_class` | per-class F1 `2·P·R/(P+R)` | `<head>_f1_class_<i>` for `i` in `0..num_classes-1` |
+| `accuracy_per_class` | per-class accuracy `tp/(tp+fn)` | `<head>_accuracy_class_<i>` for `i` in `0..num_classes-1` |
+
+Per-class metrics are useful for inspecting model behaviour on each phase/tool
+individually; each class contributes `0` when it is absent from the split.
 
 ### `edit_score` (sequence-level)
 
@@ -73,18 +82,20 @@ Each metric is reported **per head** and prefixed by the split:
 <split>_<head>_<metric>
 
 train_loss                          # training loss (epoch mean)
-train_<head>_accuracy               # e.g. train_phase_accuracy
-val_<head>_accuracy                 # e.g. val_phase_accuracy
-test_<head>_accuracy                # e.g. test_phase_accuracy
+train_<head>_jaccard                # e.g. train_phase_jaccard
+val_<head>_f1_macro                 # e.g. val_phase_f1_macro
+val_<head>_f1_class_0               # per-class F1 for class 0 of that head
+test_<head>_accuracy_class_1        # per-class accuracy for class 1
 ```
 
-For the default single-head phase model, SVG examples of keys you'll see in
-MLflow:
+For the default single-head phase model (7 phases), full examples of keys you'll
+see in MLflow:
 
 - `train_loss`
-- `train_phase_accuracy`, `train_phase_accuracy_per_phase`
-- `val_phase_accuracy`, `val_phase_accuracy_per_phase`
-- `test_phase_accuracy`, `test_phase_accuracy_per_phase`
+- `train_phase_{jaccard,f1_macro,mean_accuracy,edit_score}`
+- `train_phase_f1_class_0..6`, `train_phase_accuracy_class_0..6`
+- `val_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` + per-class variants
+- `test_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` + per-class variants
 
 ### Where each split is logged (from `src/phase_classification/run.py`)
 
@@ -105,9 +116,10 @@ Config:
 training:
   heads: [phase]
 validation:
-  metrics: [accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard, edit_score]
+  metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
 ```
 
 Produced MLflow metrics (per epoch): `train_loss`,
-`train_phase_{accuracy,accuracy_per_phase,f1_macro,f1_micro,jaccard,edit_score}`,
-`val_phase_{...}` ; plus `test_phase_{...}` at run end.
+`train_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` plus
+`train_phase_f1_class_<i>` and `train_phase_accuracy_class_<i>` for each class,
+and the `val_phase_*` equivalents; `test_phase_*` variants at run end.

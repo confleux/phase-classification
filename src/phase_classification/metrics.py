@@ -2,9 +2,13 @@
 
 Predictions and targets are collected per head as integer class indices over a
 dataset and reduced at the end. Metric names follow ``ValidationConfig.metrics``:
-``accuracy``, ``accuracy_per_phase`` (per-class balanced accuracy), ``f1_macro``,
-``f1_micro``, ``jaccard`` (per-class intersection-over-union) and ``edit_score``
-(sequence-level Levenshtein-based edit score).
+
+- ``jaccard`` -> per-head mean per-class IoU (``<head>_jaccard``)
+- ``f1_macro`` -> per-head macro F1 (``<head>_f1_macro``)
+- ``f1_per_class`` -> per-head per-class F1 (``<head>_f1_class_<i>``)
+- ``mean_accuracy`` -> per-head mean per-class accuracy (``<head>_mean_accuracy``)
+- ``accuracy_per_class`` -> per-head per-class accuracy (``<head>_accuracy_class_<i>``)
+- ``edit_score`` -> per-head sequence-level Levenshtein edit score (``<head>_edit_score``)
 """
 
 from collections import defaultdict
@@ -50,12 +54,29 @@ class MetricAccumulator:
             n = int(self.num_classes.get(name, int(pred.max()) + 1))
             cm = _confusion_matrix(target, pred, n)
             for metric in self.metric_names:
-                if metric == "edit_score":
-                    value = _edit_score(pred, target)
-                else:
-                    value = _reduce_metric(metric, cm)
-                results[f"{name}_{metric}"] = float(value)
+                values = self._metric_values(metric, cm, pred, target, n)
+                for key, value in values.items():
+                    results[f"{name}_{key}"] = float(value)
         return results
+
+    def _metric_values(
+        self, metric: str, cm: np.ndarray, pred, target, n: int
+    ) -> dict[str, float]:
+        if metric == "edit_score":
+            return {"edit_score": _edit_score(pred, target)}
+        if metric == "jaccard":
+            return {"jaccard": _jaccard_mean(cm)}
+        if metric == "f1_macro":
+            return {"f1_macro": _f1_macro(cm)}
+        if metric == "mean_accuracy":
+            return {"mean_accuracy": _mean_accuracy(cm)}
+        if metric == "f1_per_class":
+            f1s = _per_class_f1(cm)
+            return {f"f1_class_{i}": float(v) for i, v in enumerate(f1s)}
+        if metric == "accuracy_per_class":
+            accs = _per_class_accuracy(cm)
+            return {f"accuracy_class_{i}": float(v) for i, v in enumerate(accs)}
+        raise ValueError(f"Unknown metric '{metric}'.")
 
 
 def _confusion_matrix(target, pred, n: int) -> np.ndarray:
@@ -64,27 +85,46 @@ def _confusion_matrix(target, pred, n: int) -> np.ndarray:
     return cm
 
 
-def _reduce_metric(metric: str, cm: np.ndarray) -> float:
+def _per_class_accuracy(cm: np.ndarray) -> np.ndarray:
+    tp = np.diag(cm)
+    fn = cm.sum(axis=1) - tp
+    return np.divide(
+        tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) > 0
+    )
+
+
+def _mean_accuracy(cm: np.ndarray) -> float:
+    return float(_per_class_accuracy(cm).mean())
+
+
+def _per_class_jaccard(cm: np.ndarray) -> np.ndarray:
     tp = np.diag(cm)
     fp = cm.sum(axis=0) - tp
     fn = cm.sum(axis=1) - tp
-    denom = cm.sum()
-    if metric == "accuracy":
-        return float(tp.sum() / denom) if denom else 0.0
-    if metric == "accuracy_per_phase":
-        per_class = np.divide(
-            tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) > 0
-        )
-        return float(per_class.mean())
-    if metric == "f1_macro":
-        return _f1(tp, fp, fn, average="macro")
-    if metric == "f1_micro":
-        return _f1(tp, fp, fn, average="micro")
-    if metric == "jaccard":
-        union = tp + fn + fp
-        iou = np.divide(tp, union, out=np.zeros_like(tp, dtype=float), where=union > 0)
-        return float(iou.mean())
-    raise ValueError(f"Unknown metric '{metric}'.")
+    union = tp + fp + fn
+    return np.divide(tp, union, out=np.zeros_like(tp, dtype=float), where=union > 0)
+
+
+def _jaccard_mean(cm: np.ndarray) -> float:
+    return float(_per_class_jaccard(cm).mean())
+
+
+def _per_class_f1(cm: np.ndarray) -> np.ndarray:
+    tp = np.diag(cm).astype(float)
+    fp = cm.sum(axis=0) - tp
+    fn = cm.sum(axis=1) - tp
+    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp), where=(tp + fp) > 0)
+    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp), where=(tp + fn) > 0)
+    return np.divide(
+        2 * precision * recall,
+        precision + recall,
+        out=np.zeros_like(tp),
+        where=(precision + recall) > 0,
+    )
+
+
+def _f1_macro(cm: np.ndarray) -> float:
+    return float(_per_class_f1(cm).mean())
 
 
 def _edit_score(pred: np.ndarray, target: np.ndarray) -> float:
@@ -119,19 +159,3 @@ def _levenshtein(a: np.ndarray, b: np.ndarray) -> int:
             curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
         prev, curr = curr, prev
     return prev[m]
-
-
-def _f1(tp, fp, fn, average: str) -> float:
-    precision = np.divide(tp, tp + fp, out=np.zeros_like(tp, dtype=float), where=(tp + fp) > 0)
-    recall = np.divide(tp, tp + fn, out=np.zeros_like(tp, dtype=float), where=(tp + fn) > 0)
-    f1 = np.divide(
-        2 * precision * recall,
-        precision + recall,
-        out=np.zeros_like(tp, dtype=float),
-        where=(precision + recall) > 0,
-    )
-    if average == "macro":
-        return float(f1.mean())
-    tp_sum = tp.sum()
-    denom = tp_sum + 0.5 * (fp.sum() + fn.sum())
-    return float(tp_sum / denom) if denom else 0.0
