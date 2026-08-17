@@ -127,7 +127,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `tcn` | `tcn`, `cnn`, `phase_classifier` (aliases → same CNN), `resnet18` |
+| `name` | str | `resnet18` | `resnet18` |
 | `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -146,14 +146,6 @@ The set of heads that actually get an output layer is `training.heads`. The
 `name` is modular through `models/registry.py`.
 
 ### `model.params` per architecture
-
-`tcn` / `cnn` / `phase_classifier` (small CNN in `models/net.py`):
-
-| Param | Type | Default | Notes |
-|---|---|---|---|
-| `in_channels` | int | `3` | input image channels |
-| `hidden` | int | `64` | CNN width |
-| `features` | int | `256` | feature dim before the classifier heads |
 
 `resnet18` (ResNet18 backbone + classifier heads in `models/net.py`):
 
@@ -244,7 +236,7 @@ dataset:
   sequence_length: 1
   augmentations: [original]
 model:
-  name: tcn
+  name: resnet18
   params: {}
   num_classes: { phase: 7, tool: 6, verb: 10, target: 15, triplet: 100 }
 training:
@@ -263,21 +255,20 @@ runtime:
   mixed_precision: fp32
 ```
 
-## Example: multi-head (phase + tool + verb) with focal + fp16
+## Example: multi-head (phase + tool + verb, frozen pretrained backbone) with fp16
 
 ```yaml
 dataset:
   dataset_variant: cholect50-crossval
   root_dir: /data/cholect50
 model:
-  name: phase_classifier
-  params: { hidden: 128, features: 512 }
+  name: resnet18
+  params: { pretrained: true, freeze_backbone: true, features: 512 }
   num_classes: { phase: 7, tool: 6, verb: 10 }
 training:
   epochs: 80
   optimizer: adamw
   learning_rate: 0.0005
-  loss: focal
   heads: [phase, tool, verb]
 dataloader:
   batch_size: 64

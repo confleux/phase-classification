@@ -28,13 +28,13 @@ DEFAULT_NUM_CLASSES = {
 class ModelConfig(StrictModel):
     """Reference to an architecture registry entry plus arbitrary knobs.
 
-    ``name`` selects the implementation (e.g. "tcn", "vit-small"); the model
+    ``name`` selects the implementation (e.g. "resnet18"); the model
     registry resolves it with ``params`` passed through unchanged. ``num_classes``
     describes the output label space per head; override only if your dataset or
     variant differs from CholecT50.
     """
 
-    name: str = "tcn"
+    name: str = "resnet18"
     params: dict[str, Any] = Field(default_factory=dict)
     num_classes: dict[HEAD_LITERAL, int] = Field(
         default_factory=lambda: dict(DEFAULT_NUM_CLASSES)

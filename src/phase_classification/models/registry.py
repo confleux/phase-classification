@@ -7,28 +7,11 @@ Config uses loose coupling: ``model.name`` selects an implementation here and
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
-from phase_classification.models.net import PhaseClassifier, ResNet18Classifier
+from phase_classification.models.net import ResNet18Classifier
 
 
 class ModelRegistryError(Exception):
     """Raised when no model implementation matches the configured name."""
-
-
-def _build_phase_classifier(cfg: ModelConfig, heads: list[str]) -> PhaseClassifier:
-    params: dict[str, Any] = dict(cfg.params)
-    in_channels = params.pop("in_channels", 3)
-    hidden = params.pop("hidden", 64)
-    features = params.pop("features", 256)
-    if params:
-        unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'phase_classifier': {unknown}")
-    return PhaseClassifier(
-        num_classes=cfg.num_classes,
-        heads=heads,
-        in_channels=int(in_channels),
-        hidden=int(hidden),
-        features=int(features),
-    )
 
 
 def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
@@ -51,10 +34,6 @@ def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
 
 
 _BUILDERS = {
-    "phase_classifier": _build_phase_classifier,
-    # Backwards-friendly alias so the default config ("tcn") resolves.
-    "tcn": _build_phase_classifier,
-    "cnn": _build_phase_classifier,
     "resnet18": _build_resnet18,
 }
 

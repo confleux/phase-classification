@@ -30,7 +30,7 @@ dataloader:
 model:
   # Loose coupling: name selects the architecture in the model registry; params
   # carry architecture-specific knobs (backbone, depths, patch_size, ...) as-is.
-  name: tcn
+  name: resnet18
   params: {}
   # CholecT50 label space; override only for a different dataset/variant.
   num_classes:

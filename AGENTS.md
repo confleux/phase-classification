@@ -33,7 +33,7 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 ## Running an experiment
 
 - `uv run phase-cls train configs/default.yaml` runs the whole lifecycle in one run (`src/phase_classification/run.py`): train → per-epoch validation → test on the held-out test split.
-- Model architecture is selected by `model.name` through the registry `models/registry.py` (`tcn`/`cnn`/`phase_classifier` → `models/net.py` `PhaseClassifier`; `resnet18` → `ResNet18Classifier` with optional `pretrained`/`freeze_backbone` params); `model.params` carries architecture knobs.
+- Model architecture is selected by `model.name` through the registry `models/registry.py` (`resnet18` → `models/net.py` `ResNet18Classifier` with `pretrained`/`freeze_backbone` params); `model.params` carries architecture knobs.
 - Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard, edit_score).
 - MLflow logging per run:
   - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
@@ -51,7 +51,7 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 
 ## Spec track / what's been done
 
-- **Model registry** (`models/registry.py` → `models/net.py`): `tcn`/`cnn`/`phase_classifier` (small `PhaseClassifier` CNN), `resnet18` (`ResNet18Classifier` with `pretrained`/`freeze_backbone`). `model.params` rejects unknown keys.
+- **Model registry** (`models/registry.py` → `models/net.py`): `resnet18` (`ResNet18Classifier` with `pretrained`/`freeze_backbone`). `model.params` rejects unknown keys.
 - **Losses** (`losses.py`): CE for single-label heads (`phase`, `verb`), BCE for multi-label heads (`tool`, `target`, `triplet`), optional focal for single-label.
 - **Metrics** (`metrics.py`): accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard, edit_score (Levenshtein-based); accumulated per head across each split.
 - **Training loop** (`engine.py` + `run.py`): per-epoch train (with live train metrics) + validation, final test, MLflow params/tags/metrics/model, explicit `FINISHED`/`FAILED` run status.
