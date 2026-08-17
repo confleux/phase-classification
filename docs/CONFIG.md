@@ -180,7 +180,7 @@ training:
 
 | Field | Type | Default | Notes |
 |---|---|---|---|
-| `metrics` | list[str] | `["accuracy", "accuracy_per_phase"]` | `accuracy`, `accuracy_per_phase`, `f1_macro`, `f1_micro`, `jaccard` |
+| `metrics` | list[str] | `["accuracy", "accuracy_per_phase"]` | `accuracy`, `accuracy_per_phase`, `f1_macro`, `f1_micro`, `jaccard`, `edit_score` |
 | `checkpoint_path` | Path \| null | `null` | *(not wired)* |
 | `top_k` | int | `1` | *(not wired)* |
 | `batch_size` | int \| null | `null` | **raises `RunError` if set** (not wired) |

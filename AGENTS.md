@@ -4,6 +4,8 @@
 
 Real torchal package for surgical video phase classification (CholecT50): CLI, pydantic config schema, vendored dataset loader, and a full train/validate/test loop with MLflow tracking. No CI.
 
+Spec references: `docs/CONFIG.md` (every config field, type, default, allowed values, wired-vs-schema-only), `docs/METRICS.md` (metric semantics + MLflow naming).
+
 ## Toolchain
 
 - Managed with **uv**, Python **3.14** (`/Users/.../phase-classification/pyproject.toml`, `.python-version`).
@@ -32,18 +34,30 @@ Real torchal package for surgical video phase classification (CholecT50): CLI, p
 
 - `uv run phase-cls train configs/default.yaml` runs the whole lifecycle in one run (`src/phase_classification/run.py`): train → per-epoch validation → test on the held-out test split.
 - Model architecture is selected by `model.name` through the registry `models/registry.py` (`tcn`/`cnn`/`phase_classifier` → `models/net.py` `PhaseClassifier`; `resnet18` → `ResNet18Classifier` with optional `pretrained`/`freeze_backbone` params); `model.params` carries architecture knobs.
-- Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard).
+- Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard, edit_score).
 - MLflow logging per run:
   - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
-  - Per-epoch metrics logged at `step=epoch`: `train_loss` + `train_*` + `val_*`.
+  - Per-epoch metrics logged at `step=epoch`: `train_loss` + `train_*` + `val_*` (train/val compute the same metric set as test).
   - Test metrics logged at the end (`test_*`).
   - Best model (by primary val metric) saved via `mlflow.pytorch.log_model` and to `outputs/checkpoints/best.pt`.
+  - Run status is set explicitly: `FINISHED` on success, `FAILED` on exception (`run.py:_end_mlflow_run`).
 - `validation.batch_size` is not wired yet — setting it raises `RunError`.
 
 ## MLflow stack (docker)
 
 - `mlflow/docker-compose.yaml` + `mlflow/.env` run MLflow with PostgreSQL (backend store) and MinIO (S3-compatible artifact store); `.env` overrides all defaults (credentials, ports, image). Start from `mlflow/` with modern Compose v2+: `docker compose up -d`; UI at `http://localhost:5000`.
+- The stack auto-creates the S3 bucket via a one-shot `createbucket` service (`mlflow/docker-compose.yaml`), on which `mlflow` depends (`service_completed_successfully`). Requires modern Compose v2+ (legacy `docker-compose` v1 fails with `'ContainerConfig'`).
 - Point config `mlflow.tracking_uri` (or `MLFLOW_TRACKING_URI` env) at the server for experiments to log there.
+
+## Spec track / what's been done
+
+- **Model registry** (`models/registry.py` → `models/net.py`): `tcn`/`cnn`/`phase_classifier` (small `PhaseClassifier` CNN), `resnet18` (`ResNet18Classifier` with `pretrained`/`freeze_backbone`). `model.params` rejects unknown keys.
+- **Losses** (`losses.py`): CE for single-label heads (`phase`, `verb`), BCE for multi-label heads (`tool`, `target`, `triplet`), optional focal for single-label.
+- **Metrics** (`metrics.py`): accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard, edit_score (Levenshtein-based); accumulated per head across each split.
+- **Training loop** (`engine.py` + `run.py`): per-epoch train (with live train metrics) + validation, final test, MLflow params/tags/metrics/model, explicit `FINISHED`/`FAILED` run status.
+- **DataLoader** worker seeding is module-level (`data/dataloaders.py:_seed_worker`) so `num_workers>0` works on Linux forkserver.
+- **Dependency**: `mlflow` added via `uv add` (`pyproject.toml`/`uv.lock`).
+- Docs: `docs/CONFIG.md`, `docs/METRICS.md` (specs kept in sync with code).
 
 ## opencode.json
 

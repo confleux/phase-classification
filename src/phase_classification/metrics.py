@@ -3,7 +3,8 @@
 Predictions and targets are collected per head as integer class indices over a
 dataset and reduced at the end. Metric names follow ``ValidationConfig.metrics``:
 ``accuracy``, ``accuracy_per_phase`` (per-class balanced accuracy), ``f1_macro``,
-``f1_micro`` and ``jaccard`` (per-class intersection-over-union).
+``f1_micro``, ``jaccard`` (per-class intersection-over-union) and ``edit_score``
+(sequence-level Levenshtein-based edit score).
 """
 
 from collections import defaultdict
@@ -49,7 +50,10 @@ class MetricAccumulator:
             n = int(self.num_classes.get(name, int(pred.max()) + 1))
             cm = _confusion_matrix(target, pred, n)
             for metric in self.metric_names:
-                value = _reduce_metric(metric, cm)
+                if metric == "edit_score":
+                    value = _edit_score(pred, target)
+                else:
+                    value = _reduce_metric(metric, cm)
                 results[f"{name}_{metric}"] = float(value)
         return results
 
@@ -81,6 +85,40 @@ def _reduce_metric(metric: str, cm: np.ndarray) -> float:
         iou = np.divide(tp, union, out=np.zeros_like(tp, dtype=float), where=union > 0)
         return float(iou.mean())
     raise ValueError(f"Unknown metric '{metric}'.")
+
+
+def _edit_score(pred: np.ndarray, target: np.ndarray) -> float:
+    """Sequence-level Edit Score = 1 - normalised Levenshtein distance.
+
+    The predicted and target class sequences are compared with the Levenshtein
+    distance (insertions + deletions + substitutions). The score lies in
+    [0, 1] and is higher when the predicted sequence matches the ground-truth
+    sequence more closely.
+    """
+    denom = max(len(pred), len(target))
+    if denom == 0:
+        return 0.0
+    lev = _levenshtein(np.asarray(pred, dtype=np.int64), np.asarray(target, dtype=np.int64))
+    return float(1.0 - lev / denom)
+
+
+def _levenshtein(a: np.ndarray, b: np.ndarray) -> int:
+    """Wagner-Fischer Levenshtein distance between two integer sequences."""
+    n, m = len(a), len(b)
+    if n == 0:
+        return m
+    if m == 0:
+        return n
+    prev = list(range(m + 1))
+    curr = [0] * (m + 1)
+    for i in range(1, n + 1):
+        ai = a[i - 1]
+        curr[0] = i
+        for j in range(1, m + 1):
+            cost = 0 if ai == b[j - 1] else 1
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+        prev, curr = curr, prev
+    return prev[m]
 
 
 def _f1(tp, fp, fn, average: str) -> float:

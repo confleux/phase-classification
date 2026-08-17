@@ -202,7 +202,14 @@ def _is_better(value: float, best: float, higher_better: bool) -> bool:
     return value > best + 1e-9 if higher_better else value < best - 1e-9
 
 
-_HIGHER_BETTER = {"accuracy", "accuracy_per_phase", "f1_macro", "f1_micro", "jaccard"}
+_HIGHER_BETTER = {
+    "accuracy",
+    "accuracy_per_phase",
+    "f1_macro",
+    "f1_micro",
+    "jaccard",
+    "edit_score",
+}
 
 
 def _higher_is_better(metric_names: list[str]) -> bool:

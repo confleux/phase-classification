@@ -36,10 +36,32 @@ Referenced by name in `validation.metrics` (any order; the first listed is the
 | `f1_macro` | mean of per-class F1 `2·P·R/(P+R)` | 0–1 | each class weighted equally; absent class → 0 |
 | `f1_micro` | `Σtp / (Σtp + 0.5·(Σfp + Σfn))` | 0–1 | **equals `accuracy`** for single-label per-sample targets |
 | `jaccard` | mean of per-class IoU `tp/(tp+fn+fp)` | 0–1 | *mean intersection-over-union*; absent class → 0 |
+| `edit_score` | `1 − Levenshtein(pred, target) / max(len(pred), len(target))` | 0–1 | **sequence-level**; higher = closer order/transitions (see below) |
 
 Where `tp` = diagonal of the confusion matrix (correctly predicted per class),
 `fp` = `col_sums − tp`, `fn` = `row_sums − tp`, all summed over classes when
 averaging.
+
+### `edit_score` (sequence-level)
+
+Unlike the confusion-matrix metrics, `edit_score` compares the **ordered
+sequence** of predicted class indices against the ordered ground-truth sequence
+using the Levenshtein distance (minimum insertions + deletions + substitutions
+to turn one sequence into the other). It is normalised by the longer sequence and
+inverted, giving `1` for an exact order match and `0` for a complete mismatch —
+a higher score means the model better captures the correct order and transitions
+of action segments.
+
+Implementation (`metrics.py:_levenshtein`, Wagner–Fischer DP):
+- Per-sample predicted and target class indices are accumulated across batches
+  **in order** and concatenated into one sequence per head per split.
+- The DP is `O(n·m)` in the sequence lengths, which may be costly on very long
+  concatenated splits.
+- **Caveats.**
+  - `edit_score` is only temporally meaningful when samples arrive in sequence
+    order. `val`/`test` loaders use `shuffle=False`, so it holds there. The
+    `train` split shuffles, so `train_*_edit_score` is *not* a meaningful
+    temporal metric (still computed/reported).
 
 ## How metrics are reported
 
@@ -83,9 +105,9 @@ Config:
 training:
   heads: [phase]
 validation:
-  metrics: [accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard]
+  metrics: [accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard, edit_score]
 ```
 
 Produced MLflow metrics (per epoch): `train_loss`,
-`train_phase_{accuracy,accuracy_per_phase,f1_macro,f1_micro,jaccard}`,
+`train_phase_{accuracy,accuracy_per_phase,f1_macro,f1_micro,jaccard,edit_score}`,
 `val_phase_{...}` ; plus `test_phase_{...}` at run end.

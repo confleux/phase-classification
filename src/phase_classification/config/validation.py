@@ -7,8 +7,15 @@ from pydantic import Field
 
 from phase_classification.config.base import StrictModel
 
-METRICS = ("accuracy", "accuracy_per_phase", "f1_macro", "f1_micro", "jaccard")
-METRIC_STR = ("accuracy", "accuracy_per_phase", "f1_macro", "f1_micro", "jaccard")
+METRICS = (
+    "accuracy",
+    "accuracy_per_phase",
+    "f1_macro",
+    "f1_micro",
+    "jaccard",
+    "edit_score",
+)
+METRIC_STR = METRICS
 
 
 class ValidationConfig(StrictModel):
