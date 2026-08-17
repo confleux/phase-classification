@@ -9,6 +9,7 @@ description = "Surgical video phase classification (CholecT50)"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "mlflow>=3.15.1",
     "pillow>=12.3.0",
     "pydantic>=2",
     "pyyaml",

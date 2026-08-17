@@ -5,6 +5,7 @@ Usage examples::
     phase-cls validate-config configs/default.yaml
     phase-cls validate-config configs/default.yaml --check-paths
     phase-cls inspect configs/default.yaml
+    phase-cls train configs/default.yaml
 """
 
 import argparse
@@ -56,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_dl.add_argument("config", help="Path to a YAML config file.")
     p_dl.set_defaults(func=cmd_build_dataloaders)
+
+    p_train = sub.add_parser(
+        "train",
+        help="Train, validate and test a model in one run, logging to MLflow.",
+    )
+    p_train.add_argument("config", help="Path to a YAML config file.")
+    p_train.set_defaults(func=cmd_train)
 
     return parser
 
@@ -126,6 +134,21 @@ def cmd_build_dataloaders(args: argparse.Namespace) -> None:
         else:
             print(f", first batch={tuple(images.shape)}")
         print(f"    labels {shapes}")
+
+
+def cmd_train(args: argparse.Namespace) -> None:
+    cfg = _load(args.config)
+    from phase_classification.run import RunError, run_training
+
+    try:
+        test_metrics = run_training(cfg)
+    except RunError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(3) from exc
+
+    print("Test metrics:")
+    for key, value in sorted(test_metrics.items()):
+        print(f"  {key}: {value:.6f}")
 
 
 def main(argv: list[str] | None = None) -> None:

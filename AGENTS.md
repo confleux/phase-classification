@@ -2,26 +2,39 @@
 
 ## Status
 
-Fresh `uv init` scaffold (2026-08). No functionality, tests, deps, or CI yet. Expect churn; verify anything this file says before trusting it.
+Real torchal package for surgical video phase classification (CholecT50), beyond the original `uv init` scaffold: has a CLI, pydantic config schema, and a vendored dataset loader. No training/experiment code yet — only config, data, and CLI plumbing. No CI.
 
 ## Toolchain
 
 - Managed with **uv**, Python **3.14** (`/Users/.../phase-classification/pyproject.toml`, `.python-version`).
 - Default branch is `dev` (not `main`).
-- No `uv.lock` committed and no `[build-system]`/`[dependency-groups]` in `pyproject.toml` yet — this is still the boilerplate `uv init` state.
+- `src/` layout (`src/phase_classification`, hatchling wheel). `pyproject.toml` defines `[project.scripts] phase-cls`, dev deps (`pytest`, `ruff`), and `uv.lock` is committed — keep `pyproject.toml`/`uv.lock` in sync via `uv add`/`uv remove`.
 
-## Working here
+## Entrypoints
 
-- Run code with `uv run python main.py` (no entrypoint/script configured).
-- `pyproject.toml` still has the placeholder `description = "Add your description here"`.
-- No test, lint, or format tooling is configured; don't assume one exists.
+- CLI: `uv run phase-cls <subcommand> <config.yaml>`. Subcommands: `validate-config`, `inspect`, `build-dataloaders` (`src/phase_classification/cli.py`).
+- Module: `uv run python -m phase_classification`.
+- `main.py` is leftover `uv init` boilerplate — ignore it; it is not the real entrypoint.
 
-## Python, UV & Git Workflow Rules
-- **Environment & Execution**: Always run Python files using `uv run <script_path>`. Never use raw `python` or activate the environment manually.
-- **Dependency Management**: To add or remove libraries, use `uv add <package>` or `uv remove <package>`. Never use `pip install`.
-- **Testing & Tooling**: Run tests via `uv run pytest`. Run linting via `uv run ruff check .`.
-- **Git Commit Compliance**: 
-  - Work in highly isolated micro-steps.
-  - Modify a single logical module, class, or function at a time.
-  - Pause, execute verification tests, and explicitly ask the user for feedback before touching a second file.
-  - Ensure all updates leave the `pyproject.toml` or `uv.lock` synchronized.
+## Config system
+
+- YAML config parsed + schema-validated in `src/phase_classification/loader.py`. The pydantic base (`config/base.py`) is strict with `extra="forbid"` — unknown fields are errors.
+- `load_config()` validates the schema; `check_paths()` is a separate call that checks on-disk paths. `build_dataloaders()` raises `DatasetUnavailableError` if `videos/` and `labels/` dirs are missing.
+- `configs/default.yaml` is the reference example: only override fields you need; everything else falls back to schema defaults.
+
+## Data
+
+- Only dataset: CholecT50, via the vendored reference loader `data/cholec_t50.py` (Apache-2.0, from CAMMA — do not modify).
+- `data/builders.py` dispatches on `dataset_variant` prefix `cholect`; unknown variants raise `DatasetRegistryError`.
+- Requires a local dataset dir with `videos/` and `labels/` (config `dataset.root_dir`, e.g. `/data/cholect50`); downstream won't work without the data on disk.
+
+## opencode.json
+
+Edit permission is restricted to `src/**`, `tests/**`, and `*.md`; edits anywhere else are denied and bash commands prompt. `watcher.useGitignore: true`.
+
+## Workflow rules
+
+- Run Python via `uv run <...>`; never raw `python` or manual venv activation.
+- Add/remove deps with `uv add`/`uv remove`; never `pip install`.
+- Test with `uv run pytest`; lint with `uv run ruff check .`.
+- Work in micro-steps: modify one logical module/class/function at a time, verify, and ask for feedback before touching a second file.
