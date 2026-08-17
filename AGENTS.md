@@ -2,7 +2,7 @@
 
 ## Status
 
-Real torchal package for surgical video phase classification (CholecT50), beyond the original `uv init` scaffold: has a CLI, pydantic config schema, and a vendored dataset loader. No training/experiment code yet — only config, data, and CLI plumbing. No CI.
+Real torchal package for surgical video phase classification (CholecT50): CLI, pydantic config schema, vendored dataset loader, and a full train/validate/test loop with MLflow tracking. No CI.
 
 ## Toolchain
 
@@ -12,7 +12,7 @@ Real torchal package for surgical video phase classification (CholecT50), beyond
 
 ## Entrypoints
 
-- CLI: `uv run phase-cls <subcommand> <config.yaml>`. Subcommands: `validate-config`, `inspect`, `build-dataloaders` (`src/phase_classification/cli.py`).
+- CLI: `uv run phase-cls <subcommand> <config.yaml>`. Subcommands: `validate-config`, `inspect`, `build-dataloaders`, `train` (`src/phase_classification/cli.py`).
 - Module: `uv run python -m phase_classification`.
 - `main.py` is leftover `uv init` boilerplate — ignore it; it is not the real entrypoint.
 
@@ -27,6 +27,23 @@ Real torchal package for surgical video phase classification (CholecT50), beyond
 - Only dataset: CholecT50, via the vendored reference loader `data/cholec_t50.py` (Apache-2.0, from CAMMA — do not modify).
 - `data/builders.py` dispatches on `dataset_variant` prefix `cholect`; unknown variants raise `DatasetRegistryError`.
 - Requires a local dataset dir with `videos/` and `labels/` (config `dataset.root_dir`, e.g. `/data/cholect50`); downstream won't work without the data on disk.
+
+## Running an experiment
+
+- `uv run phase-cls train configs/default.yaml` runs the whole lifecycle in one run (`src/phase_classification/run.py`): train → per-epoch validation → test on the held-out test split.
+- Model architecture is selected by `model.name` through the registry `models/registry.py` (`tcn`/`cnn`/`phase_classifier` → `models/net.py`); `model.params` carries architecture knobs.
+- Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard).
+- MLflow logging per run:
+  - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
+  - Per-epoch metrics logged at `step=epoch`: `train_loss` + `train_*` + `val_*`.
+  - Test metrics logged at the end (`test_*`).
+  - Best model (by primary val metric) saved via `mlflow.pytorch.log_model` and to `outputs/checkpoints/best.pt`.
+- `validation.batch_size` is not wired yet — setting it raises `RunError`.
+
+## MLflow stack (docker)
+
+- `mlflow/docker-compose.yaml` + `mlflow/.env` run MLflow with PostgreSQL (backend store) and MinIO (S3-compatible artifact store); `.env` overrides all defaults (credentials, ports, image). Start from `mlflow/` with modern Compose v2+: `docker compose up -d`; UI at `http://localhost:5000`.
+- Point config `mlflow.tracking_uri` (or `MLFLOW_TRACKING_URI` env) at the server for experiments to log there.
 
 ## opencode.json
 
