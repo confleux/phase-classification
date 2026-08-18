@@ -67,8 +67,8 @@ mlflow:
   tags: {}
   log_artifacts_to: null
   s3_endpoint_url: http://localhost:9000
-  aws_access_key_id: null
-  aws_secret_access_key: null
+  aws_access_key_id: minio
+  aws_secret_access_key: miniopass
   aws_region: us-east-1
 
 runtime:

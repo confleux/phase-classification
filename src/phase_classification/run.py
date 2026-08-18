@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import torch
@@ -207,9 +208,10 @@ def _save_model_to_mlflow(cfg: ExperimentConfig, model, state_dict) -> None:
     model.load_state_dict(state_dict)
     model.eval()
     if cfg.project.save_checkpoints:
+        name = f"{cfg.project.name}_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}"
         mlflow.pytorch.log_model(
             model,
-            name="model",
+            name=name,
             serialization_format="pickle",
         )
     if cfg.mlflow.log_artifacts_to is not None:
