@@ -189,7 +189,11 @@ def _save_model_to_mlflow(cfg: ExperimentConfig, model, state_dict) -> None:
     model.load_state_dict(state_dict)
     model.eval()
     if cfg.project.save_checkpoints:
-        mlflow.pytorch.log_model(model, artifact_path="model")
+        mlflow.pytorch.log_model(
+            model,
+            name="model",
+            serialization_format="pickle",
+        )
     if cfg.mlflow.log_artifacts_to is not None:
         artifact_dir = Path(cfg.mlflow.log_artifacts_to)
         artifact_dir.mkdir(parents=True, exist_ok=True)

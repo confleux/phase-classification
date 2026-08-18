@@ -5,7 +5,8 @@
       "*": "deny",
       "src/**": "allow",
       "tests/**": "allow",
-      "*.md": "allow"
+      "*.md": "allow",
+      "*.yaml": "allow"
     },
     "bash": "ask"
   },
