@@ -87,3 +87,55 @@ class MultiHeadLoss(nn.Module):
         total = sum(per_head.values(), empty()) if per_head else empty()
         per_head["total"] = total
         return per_head
+
+
+class MSTCNLoss(nn.Module):
+    """MS-TCN loss: per-frame CE/BCE summed over every stage + smoothing loss.
+
+    The model passes its per-head, per-stage (final) logits via ``stage_logits``
+    (a dict of ``head -> list[Tensor]`` of shape ``(B, L, K)``, set during
+    ``forward``). Each stage's predictions are supervised with per-frame CE
+    (single-label heads) or BCE (multi-label heads), and a truncated-MSE
+    smoothing loss penalises over-segmentation (each stage).
+    """
+
+    def __init__(self, model, heads: list[str], tau: float = 4.0):
+        super().__init__()
+        self.model = model
+        self.heads = list(heads)
+        self.tau = tau
+        self._ce = nn.CrossEntropyLoss()
+        self._bce = nn.BCEWithLogitsLoss()
+
+    def _sequence_target(self, label: torch.Tensor, device: torch.device) -> torch.Tensor:
+        return label.to(device).float()
+
+    def _smoothing(self, logits: torch.Tensor) -> torch.Tensor:
+        prob = torch.softmax(logits, dim=1)  # (B, K, L)
+        if prob.shape[-1] <= 1:
+            return torch.zeros((), device=prob.device)
+        diff = (prob[:, :, 1:] - prob[:, :, :-1]) ** 2
+        return torch.clamp(diff, max=self.tau).mean()
+
+    def forward(
+        self, logits: dict[str, torch.Tensor], labels: tuple[torch.Tensor, ...]
+    ) -> dict[str, torch.Tensor]:
+        device = next(iter(logits.values())).device
+        per_head: dict[str, torch.Tensor] = {}
+        for name in self.heads:
+            stages = self.model.stage_logits.get(name)
+            if not stages:
+                continue
+            target = self._sequence_target(labels[HEAD_TUPLE_INDEX[name]], device)
+            head_loss = torch.zeros((), device=device)
+            for stage_out in stages:  # (B, L, K)
+                stage_out = stage_out.transpose(1, 2)  # (B, K, L)
+                if name in SINGLE_LABEL_HEADS:
+                    head_loss = head_loss + self._ce(stage_out, target.argmax(dim=2))
+                else:
+                    head_loss = head_loss + self._bce(stage_out, target)
+                head_loss = head_loss + self._smoothing(stage_out)
+            per_head[name] = head_loss
+        total = sum(per_head.values()) if per_head else torch.zeros((), device=device)
+        per_head["total"] = total
+        return per_head

@@ -16,6 +16,11 @@ index**:
 So all metrics below are single-label, argmax-based. A per-head confusion matrix
 over the head's `num_classes` is accumulated across the whole split, then reduced.
 
+> **Temporal models** (`swin-ms-tcn`): logits are per-frame `(B, L, K)`. The
+> accumulator flattens `(B, L, K) -> (B·L, K)` so every metric is computed **per
+> frame**, and `edit_score` runs over the full ordered per-frame sequence — the
+> standard action-segmentation evaluation.
+
 > **Caveats.**
 > - Multi-label heads (`tool`, `target`, `triplet`) carry more than one active
 >   class per frame; argmax keeps only the first, so per-class metrics on those

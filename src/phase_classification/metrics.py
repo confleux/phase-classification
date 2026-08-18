@@ -36,8 +36,13 @@ class MetricAccumulator:
         for name in self.heads:
             if name not in logits or name not in targets:
                 continue
-            pred = np.argmax(logits[name], axis=1)
-            tgt = np.argmax(targets[name], axis=1)
+            lo = np.asarray(logits[name])
+            tg = np.asarray(targets[name])
+            if lo.ndim == 3:  # (B, L, K) per-frame sequence -> (B*L, K)
+                lo = lo.reshape(-1, lo.shape[-1])
+                tg = tg.reshape(-1, tg.shape[-1])
+            pred = np.argmax(lo, axis=1)
+            tgt = np.argmax(tg, axis=1)
             self._append(name, pred, tgt)
 
     def compute(self) -> dict[str, float]:

@@ -12,7 +12,7 @@ import torch
 from torch import nn
 
 from phase_classification.config.training import TrainingConfig
-from phase_classification.losses import MultiHeadLoss, head_index
+from phase_classification.losses import MSTCNLoss, MultiHeadLoss, head_index
 from phase_classification.metrics import MetricAccumulator
 
 
@@ -91,7 +91,11 @@ class Trainer:
         self.metric_names = metric_names
         self.num_classes = num_classes
         self.mixed_precision = mixed_precision
-        self.loss_fn = MultiHeadLoss(cfg.heads, cfg.loss)
+        self.loss_fn = (
+            MSTCNLoss(model, cfg.heads)
+            if getattr(model, "is_mstcn", False)
+            else MultiHeadLoss(cfg.heads, cfg.loss)
+        )
         self.optimizer = build_optimizer(model, cfg)
         self.scheduler = build_scheduler(
             self.optimizer, cfg, steps_per_epoch=1, higher_is_better=higher_is_better

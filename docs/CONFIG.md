@@ -127,7 +127,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18` |
+| `name` | str | `resnet18` | `resnet18`, `swin-ms-tcn` (alias `ms-tcn`) |
 | `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -165,6 +165,23 @@ model:
 training:
   heads: [phase, tool]
 ```
+
+`swin-ms-tcn` (Swin Transformer frame encoder + multi-stage MS-TCN temporal
+head in `models/net.py`; **requires `dataset.sequence_length >= 2`**):
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `variant` | str | `t` | Swin variant: `t`/`s`/`b` |
+| `pretrained` | bool | `false` | ImageNet weights for the Swin encoder |
+| `freeze_backbone` | bool | `false` | freeze the Swin encoder; only the temporal head trains |
+| `num_stages` | int | `4` | number of MS-TCN stages |
+| `num_layers` | int | `10` | dilated temporal layers per stage |
+| `num_f_maps` | int | `64` | hidden channels of the temporal convs |
+| `kernel_size` | int | `3` | temporal conv kernel size |
+
+Produces **per-frame** predictions `(B, L, K)`; trained with the MS-TCN loss
+(per-stage CE + truncated-MSE smoothing via `MSTCNLoss`). Metrics are computed
+per frame. See `configs/ms-tcn.yaml` for a full example.
 
 ---
 

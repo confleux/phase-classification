@@ -7,7 +7,7 @@ Config uses loose coupling: ``model.name`` selects an implementation here and
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
-from phase_classification.models.net import ResNet18Classifier
+from phase_classification.models.net import ResNet18Classifier, SwinMSTCN
 
 
 class ModelRegistryError(Exception):
@@ -33,8 +33,35 @@ def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
     )
 
 
+def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
+    params: dict[str, Any] = dict(cfg.params)
+    variant = params.pop("variant", "t")
+    pretrained = params.pop("pretrained", False)
+    freeze_backbone = params.pop("freeze_backbone", False)
+    num_stages = params.pop("num_stages", 4)
+    num_layers = params.pop("num_layers", 10)
+    num_f_maps = params.pop("num_f_maps", 64)
+    kernel_size = params.pop("kernel_size", 3)
+    if params:
+        unknown = ", ".join(sorted(params))
+        raise ModelRegistryError(f"Unsupported params for 'swin-ms-tcn': {unknown}")
+    return SwinMSTCN(
+        num_classes=cfg.num_classes,
+        heads=heads,
+        variant=str(variant),
+        pretrained=bool(pretrained),
+        freeze_backbone=bool(freeze_backbone),
+        num_stages=int(num_stages),
+        num_layers=int(num_layers),
+        num_f_maps=int(num_f_maps),
+        kernel_size=int(kernel_size),
+    )
+
+
 _BUILDERS = {
     "resnet18": _build_resnet18,
+    "swin-ms-tcn": _build_swin_mstcn,
+    "ms-tcn": _build_swin_mstcn,
 }
 
 

@@ -1,0 +1,79 @@
+# Baseline example config for surgical video phase classification (CholecT50).
+# Only fields you want to override are required; everything else falls back to
+# the schema defaults. All fields are validated by the pydantic schema.
+
+project:
+  name: phase-classification
+  seed: 42
+  output_dir: outputs
+  save_checkpoints: true
+
+dataset:
+  dataset_variant: cholect50-crossval
+  root_dir: /home/andreikrivenko/dataset/CholecT50
+  test_fold: 1
+  sequence_length: 32
+  augmentations: [original]
+  image_size: [256, 448]
+  normalize: true
+  # video_ids: null   # optional explicit override
+
+dataloader:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  prefetch_factor: 2
+  persistent_workers: true
+  drop_last: false
+
+model:
+  # Loose coupling: name selects the architecture in the model registry; params
+  # carry architecture-specific knobs (backbone, depths, patch_size, ...) as-is.
+  name: swin-ms-tcn
+  params: { variant: t, pretrained: true, freeze_backbone: false, num_stages: 4, num_layers: 10, num_f_maps: 64, kernel_size: 3 }
+  # CholecT50 label space; override only for a different dataset/variant.
+  num_classes:
+    phase: 7
+    tool: 6
+    verb: 10
+    target: 15
+    triplet: 100
+
+training:
+  epochs: 20
+  batch_size: 32
+  optimizer: adamw
+  learning_rate: 0.001
+  weight_decay: 0.0
+  momentum: 0.9
+  scheduler: none
+  step_size: 10
+  gamma: 0.1
+  loss: cross_entropy
+  heads: [phase]
+  grad_clip_norm: null
+
+validation:
+  metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
+  checkpoint_path: null
+  top_k: 1
+  batch_size: null
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: phase_classification
+  run_name: null
+  tags: {}
+  log_artifacts_to: null
+  s3_endpoint_url: http://localhost:9000
+  aws_access_key_id: minio
+  aws_secret_access_key: miniopass
+  aws_region: us-east-1
+
+runtime:
+  device: cuda
+  cuda_device: 0
+  mixed_precision: fp32
+  seed: 42
+  num_workers: 4
