@@ -13,3 +13,9 @@ class MLflowConfig(StrictModel):
     run_name: str | None = None
     tags: dict[str, str] = Field(default_factory=dict)
     log_artifacts_to: Path | None = None
+    # Client-side S3 (artifact store) access, used when uploading model/metrics.
+    # Read as env-var fallbacks; never logged to MLflow as params.
+    s3_endpoint_url: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+    aws_region: str | None = None

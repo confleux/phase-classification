@@ -48,6 +48,7 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 - `mlflow/docker-compose.yaml` + `mlflow/.env` run MLflow with PostgreSQL (backend store) and MinIO (S3-compatible artifact store); `.env` overrides all defaults (credentials, ports, image). Start from `mlflow/` with modern Compose v2+: `docker compose up -d`; UI at `http://localhost:5000`.
 - The stack auto-creates the S3 bucket via a one-shot `createbucket` service (`mlflow/docker-compose.yaml`), on which `mlflow` depends (`service_completed_successfully`). Requires modern Compose v2+ (legacy `docker-compose` v1 fails with `'ContainerConfig'`).
 - Point config `mlflow.tracking_uri` (or `MLFLOW_TRACKING_URI` env) at the server for experiments to log there.
+- The training client also needs S3/MinIO credentials to upload the model artifact — set `mlflow.s3_endpoint_url`/`aws_access_key_id`/`aws_secret_access_key`/`aws_region` in the config (or the corresponding env vars). Credentials are excluded from MLflow params (`run.py:_set_s3_env`).
 
 ## Spec track / what's been done
 

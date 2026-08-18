@@ -24,16 +24,25 @@ class ExperimentConfig(StrictModel):
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
 
     def to_mlflow_params(self) -> dict[str, str]:
-        """Flatten the config to a ``{section.param: value}`` dict for MLflow."""
+        """Flatten the config to a ``{section.param: value}`` dict for MLflow.
+
+        Secret fields are excluded so credentials are never recorded as params.
+        """
 
         flat: dict[str, str] = {}
         for name, model in self.model_dump().items():
             if isinstance(model, dict):
                 for k, v in model.items():
+                    if _is_sensitive(name, k):
+                        continue
                     flat[f"{name}.{k}"] = _stringify(v)
             else:
                 flat[name] = _stringify(model)
         return flat
+
+
+def _is_sensitive(section: str, key: str) -> bool:
+    return section == "mlflow" and key in {"aws_access_key_id", "aws_secret_access_key"}
 
 
 def _stringify(value: object) -> str:

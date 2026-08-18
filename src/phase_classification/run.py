@@ -10,6 +10,7 @@ A single :func:`run_training` call performs the complete lifecycle for one run:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +51,7 @@ def _git_commit_hash() -> str | None:
 
 
 def _start_mlflow(cfg: ExperimentConfig) -> None:
+    _set_s3_env(cfg.mlflow)
     if cfg.mlflow.tracking_uri:
         mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
     mlflow.set_experiment(cfg.mlflow.experiment_name)
@@ -60,6 +62,22 @@ def _start_mlflow(cfg: ExperimentConfig) -> None:
     if commit_hash is not None:
         mlflow.set_tag("gitcommithash", commit_hash)
     mlflow.log_params(cfg.to_mlflow_params())
+
+
+def _set_s3_env(mlflow_cfg) -> None:
+    """Expose S3/MinIO client credentials to boto3 (env vars win over config).
+
+    Without these the training process cannot upload the model artifact to the
+    S3 artifact store and fails with ``NoCredentialsError``.
+    """
+    for env_name, value in (
+        ("MLFLOW_S3_ENDPOINT_URL", mlflow_cfg.s3_endpoint_url),
+        ("AWS_ACCESS_KEY_ID", mlflow_cfg.aws_access_key_id),
+        ("AWS_SECRET_ACCESS_KEY", mlflow_cfg.aws_secret_access_key),
+        ("AWS_DEFAULT_REGION", mlflow_cfg.aws_region),
+    ):
+        if value:
+            os.environ.setdefault(env_name, value)
 
 
 def _test_loaders(dl, dataloader_cfg) -> list[DataLoader]:

@@ -194,6 +194,17 @@ best-checkpoint selection.
 | `run_name` | str \| null | `null` | auto-generated if not set |
 | `tags` | dict[str,str] | `{}` | set as MLflow run tags |
 | `log_artifacts_to` | Path \| null | `null` | also write `model.pt` here + log as artifact |
+| `s3_endpoint_url` | str \| null | `null` | MinIO/S3 endpoint for **client-side** artifact upload, e.g. `http://localhost:9000` |
+| `aws_access_key_id` | str \| null | `null` | S3 access key (client-side); **excluded from logged params** |
+| `aws_secret_access_key` | str \| null | `null` | S3 secret key (client-side); **excluded from logged params** |
+| `aws_region` | str \| null | `null` | e.g. `us-east-1`; `AWS_DEFAULT_REGION` fallback |
+
+The `s3_*`/`aws_*` fields configure the **training client** so it can upload the
+model artifact to the S3 artifact store (the docker-compose `.env` only sets
+credentials for the MLflow *server* container). Values are injected as
+environment variables at run start; existing environment variables take
+precedence, and `aws_access_key_id`/`aws_secret_access_key` are **never logged**
+as MLflow params.
 
 Every run automatically logs:
 - all config params (`<section>.<field>` → value),
