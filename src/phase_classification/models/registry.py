@@ -7,7 +7,9 @@ Config uses loose coupling: ``model.name`` selects an implementation here and
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
-from phase_classification.models.net import ResNet18Classifier, SwinMSTCN
+from phase_classification.models.ms_tcn import SwinMSTCN
+from phase_classification.models.resnet18 import ResNet18Classifier
+from phase_classification.models.swin_classifier import SwinClassifier
 
 
 class ModelRegistryError(Exception):
@@ -58,10 +60,31 @@ def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
     )
 
 
+def _build_swin_classifier(cfg: ModelConfig, heads: list[str]) -> SwinClassifier:
+    params: dict[str, Any] = dict(cfg.params)
+    variant = params.pop("variant", "t")
+    pretrained = params.pop("pretrained", False)
+    freeze_backbone = params.pop("freeze_backbone", False)
+    features = params.pop("features", 512)
+    if params:
+        unknown = ", ".join(sorted(params))
+        raise ModelRegistryError(f"Unsupported params for 'swin-cls': {unknown}")
+    return SwinClassifier(
+        num_classes=cfg.num_classes,
+        heads=heads,
+        variant=str(variant),
+        pretrained=bool(pretrained),
+        freeze_backbone=bool(freeze_backbone),
+        features=int(features),
+    )
+
+
 _BUILDERS = {
     "resnet18": _build_resnet18,
     "swin-ms-tcn": _build_swin_mstcn,
     "ms-tcn": _build_swin_mstcn,
+    "swin-cls": _build_swin_classifier,
+    "swin-classifier": _build_swin_classifier,
 }
 
 
