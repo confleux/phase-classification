@@ -28,7 +28,7 @@ dataloader:
   drop_last: false
 
 model:
-  name: swin-ms-tcn
+  name: convnext-ms-tcn
   # ConvNeXt frame encoder + MS-TCN temporal head (see models/ms_tcn.py).
   params: { variant: tiny, pretrained: true, freeze_backbone: false, num_stages: 4, num_layers: 10, num_f_maps: 64, kernel_size: 3 }
   num_classes:

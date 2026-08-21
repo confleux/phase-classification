@@ -35,7 +35,7 @@ def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
     )
 
 
-def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> ConvNeXtMSTCN:
+def _build_convnext_mstcn(cfg: ModelConfig, heads: list[str]) -> ConvNeXtMSTCN:
     params: dict[str, Any] = dict(cfg.params)
     variant = params.pop("variant", "tiny")
     pretrained = params.pop("pretrained", False)
@@ -46,7 +46,7 @@ def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> ConvNeXtMSTCN:
     kernel_size = params.pop("kernel_size", 3)
     if params:
         unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'swin-ms-tcn': {unknown}")
+        raise ModelRegistryError(f"Unsupported params for 'convnext-ms-tcn': {unknown}")
     return ConvNeXtMSTCN(
         num_classes=cfg.num_classes,
         heads=heads,
@@ -81,8 +81,8 @@ def _build_swin_classifier(cfg: ModelConfig, heads: list[str]) -> SwinClassifier
 
 _BUILDERS = {
     "resnet18": _build_resnet18,
-    "swin-ms-tcn": _build_swin_mstcn,
-    "ms-tcn": _build_swin_mstcn,
+    "convnext-ms-tcn": _build_convnext_mstcn,
+    "ms-tcn": _build_convnext_mstcn,
     "swin-cls": _build_swin_classifier,
     "swin-classifier": _build_swin_classifier,
 }

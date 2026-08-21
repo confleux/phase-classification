@@ -128,7 +128,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18`, `swin-ms-tcn` (alias `ms-tcn`) |
+| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`) |
 | `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -167,14 +167,14 @@ training:
   heads: [phase, tool]
 ```
 
-`swin-ms-tcn` (Swin Transformer frame encoder + multi-stage MS-TCN temporal
+`convnext-ms-tcn` (ConvNeXt frame encoder + multi-stage MS-TCN temporal
 head in `models/ms_tcn.py`; **requires `dataset.sequence_length >= 2`**):
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `variant` | str | `t` | Swin variant: `t`/`s`/`b` |
-| `pretrained` | bool | `false` | ImageNet weights for the Swin encoder |
-| `freeze_backbone` | bool | `false` | freeze the Swin encoder; only the temporal head trains |
+| `variant` | str | `tiny` | ConvNeXt variant: `tiny`/`small`/`base`/`large` |
+| `pretrained` | bool | `false` | ImageNet weights for the ConvNeXt encoder |
+| `freeze_backbone` | bool | `false` | freeze the ConvNeXt encoder; only the temporal head trains |
 | `num_stages` | int | `4` | number of MS-TCN stages |
 | `num_layers` | int | `10` | dilated temporal layers per stage |
 | `num_f_maps` | int | `64` | hidden channels of the temporal convs |
