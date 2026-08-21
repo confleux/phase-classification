@@ -16,6 +16,7 @@ dataset:
   augmentations: [original]
   image_size: [256, 448]
   normalize: true
+  loader: frame
   # video_ids: null   # optional explicit override
 
 dataloader:

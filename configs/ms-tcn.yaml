@@ -16,6 +16,7 @@ dataset:
   augmentations: [original]
   image_size: [256, 448]
   normalize: true
+  loader: frame
   # video_ids: null   # optional explicit override
 
 dataloader:
@@ -31,7 +32,8 @@ model:
   # Loose coupling: name selects the architecture in the model registry; params
   # carry architecture-specific knobs (backbone, depths, patch_size, ...) as-is.
   name: swin-ms-tcn
-  params: { variant: t, pretrained: true, freeze_backbone: false, num_stages: 4, num_layers: 10, num_f_maps: 64, kernel_size: 3 }
+  # ConvNeXt frame encoder + MS-TCN temporal head (see models/ms_tcn.py).
+  params: { variant: tiny, pretrained: true, freeze_backbone: false, num_stages: 4, num_layers: 10, num_f_maps: 64, kernel_size: 3 }
   # CholecT50 label space; override only for a different dataset/variant.
   num_classes:
     phase: 7
