@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from tqdm import tqdm
 
 from phase_classification.config.training import TrainingConfig
 from phase_classification.losses import MSTCNLoss, MultiHeadLoss, head_index
@@ -158,9 +159,12 @@ class Trainer:
     ) -> tuple[float, dict[str, float]]:
         self.model.train()
         total, count = 0.0, 0
-        for images, labels in loader:
-            total += self.training_step(images, labels, accumulator=accumulator)
+        pbar = tqdm(loader, desc="train", leave=False, unit="batch")
+        for images, labels in pbar:
+            loss = self.training_step(images, labels, accumulator=accumulator)
+            total += loss
             count += 1
+            pbar.set_postfix(loss=f"{total / count:.4f}")
         loss = total / max(count, 1)
         metrics = accumulator.compute() if accumulator is not None else {}
         return loss, metrics
@@ -168,7 +172,7 @@ class Trainer:
     @torch.no_grad()
     def evaluate_accumulate(self, loader, accumulator: MetricAccumulator) -> None:
         self.model.eval()
-        for images, labels in loader:
+        for images, labels in tqdm(loader, desc="eval", leave=False, unit="batch"):
             images, labels = self._to_device(images, labels)
             logits = self.model(images)
             logits_np = {name: logits[name].cpu().numpy() for name in logits}
