@@ -7,7 +7,7 @@ Config uses loose coupling: ``model.name`` selects an implementation here and
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
-from phase_classification.models.ms_tcn import SwinMSTCN
+from phase_classification.models.ms_tcn import ConvNeXtMSTCN
 from phase_classification.models.resnet18 import ResNet18Classifier
 from phase_classification.models.swin_classifier import SwinClassifier
 
@@ -35,9 +35,9 @@ def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
     )
 
 
-def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
+def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> ConvNeXtMSTCN:
     params: dict[str, Any] = dict(cfg.params)
-    variant = params.pop("variant", "t")
+    variant = params.pop("variant", "tiny")
     pretrained = params.pop("pretrained", False)
     freeze_backbone = params.pop("freeze_backbone", False)
     num_stages = params.pop("num_stages", 4)
@@ -47,7 +47,7 @@ def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
     if params:
         unknown = ", ".join(sorted(params))
         raise ModelRegistryError(f"Unsupported params for 'swin-ms-tcn': {unknown}")
-    return SwinMSTCN(
+    return ConvNeXtMSTCN(
         num_classes=cfg.num_classes,
         heads=heads,
         variant=str(variant),

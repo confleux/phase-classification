@@ -1,11 +1,11 @@
-"""Swin Transformer feature extractor + MS-TCN temporal head."""
+"""ConvNeXt feature extractor + MS-TCN temporal head."""
 
 from collections.abc import Mapping
 
 import torch
 from torch import nn
 
-from phase_classification.models.backbones import SwinFeatureExtractor
+from phase_classification.models.backbones import ConvNeXtFeatureExtractor
 
 
 class TemporalResidualBlock(nn.Module):
@@ -57,10 +57,10 @@ class SingleStageTCN(nn.Module):
         return {name: conv(out) for name, conv in self.out_convs.items()}
 
 
-class SwinMSTCN(nn.Module):
-    """Swin Transformer frame encoder + multi-stage MS-TCN temporal head.
+class ConvNeXtMSTCN(nn.Module):
+    """ConvNeXt frame encoder + multi-stage MS-TCN temporal head.
 
-    Input ``(B, L, C, H, W)`` (or ``(B, C, H, W)``) -> per-frame Swin features ->
+    Input ``(B, L, C, H, W)`` (or ``(B, C, H, W)``) -> per-frame ConvNeXt features ->
     ``num_stages`` of dilated temporal convs, each refining the previous stage's
     softmax (concatenated with the frame features). Returns per-head, per-frame
     logits ``(B, L, K)`` of the final stage, and keeps every stage's outputs in
@@ -73,7 +73,7 @@ class SwinMSTCN(nn.Module):
         self,
         num_classes: Mapping[str, int],
         heads: list[str],
-        variant: str = "t",
+        variant: str = "tiny",
         pretrained: bool = False,
         freeze_backbone: bool = False,
         num_stages: int = 4,
@@ -84,7 +84,7 @@ class SwinMSTCN(nn.Module):
         super().__init__()
         self.heads = list(heads)
         self.head_sizes = {h: num_classes[h] for h in self.heads if h in num_classes}
-        self.encoder = SwinFeatureExtractor(
+        self.encoder = ConvNeXtFeatureExtractor(
             variant=variant, pretrained=pretrained, freeze=freeze_backbone
         )
         self.in_channels = self.encoder.dim

@@ -148,7 +148,7 @@ The set of heads that actually get an output layer is `training.heads`. The
 
 ### `model.params` per architecture
 
-`resnet18` (ResNet18 backbone + classifier heads in `models/net.py`):
+`resnet18` (ResNet18 backbone + classifier heads in `models/resnet18.py`):
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -168,7 +168,7 @@ training:
 ```
 
 `swin-ms-tcn` (Swin Transformer frame encoder + multi-stage MS-TCN temporal
-head in `models/net.py`; **requires `dataset.sequence_length >= 2`**):
+head in `models/ms_tcn.py`; **requires `dataset.sequence_length >= 2`**):
 
 | Param | Type | Default | Notes |
 |---|---|---|---|

@@ -127,11 +127,16 @@ class MSTCNLoss(nn.Module):
             if not stages:
                 continue
             target = self._sequence_target(labels[HEAD_TUPLE_INDEX[name]], device)
+            if target.ndim == 2:  # (B, K) single-frame batch -> (B, 1, K)
+                target = target.unsqueeze(1)
             head_loss = torch.zeros((), device=device)
             for stage_out in stages:  # (B, L, K)
                 stage_out = stage_out.transpose(1, 2)  # (B, K, L)
                 if name in SINGLE_LABEL_HEADS:
-                    head_loss = head_loss + self._ce(stage_out, target.argmax(dim=2))
+                    head_loss = head_loss + self._ce(
+                        stage_out.transpose(1, 2).reshape(-1, stage_out.shape[1]),
+                        target.reshape(-1, target.shape[-1]).argmax(dim=1),
+                    )
                 else:
                     head_loss = head_loss + self._bce(stage_out, target)
                 head_loss = head_loss + self._smoothing(stage_out)

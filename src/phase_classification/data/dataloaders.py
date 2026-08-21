@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import partial
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import ConcatDataset, DataLoader, Dataset
 
 from phase_classification.config import ExperimentConfig
 from phase_classification.data.builders import build_dataset
@@ -27,11 +27,15 @@ def _seed_worker(worker_id: int, seed: int) -> None:
 
 @dataclass
 class DataLoaders:
-    """Named train/val/test dataloaders for the training loop."""
+    """Named train/val/test dataloaders for the training loop.
+
+    In ``dataset.loader == "video"`` mode ``test`` is a *list* of per-video
+    dataloaders (one whole video per step) instead of a single loader.
+    """
 
     train: DataLoader
     val: DataLoader
-    test: DataLoader
+    test: DataLoader | list[DataLoader]
 
 
 def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLoader:
@@ -95,16 +99,27 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     worker_init_fn = partial(_seed_worker, seed=seed)
     dl_cfg = cfg.dataloader
     if cfg.dataset.loader == "video":
+        # train/val are lists of per-video datasets -> concatenate into one
+        # dataset; each item is a whole video (batch_size forced to 1).
         return DataLoaders(
             train=_make_video_loader(
-                train_ds, shuffle=dl_cfg.shuffle, cfg=dl_cfg, worker_init_fn=worker_init_fn
+                ConcatDataset(train_ds),
+                shuffle=dl_cfg.shuffle,
+                cfg=dl_cfg,
+                worker_init_fn=worker_init_fn,
             ),
             val=_make_video_loader(
-                val_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
+                ConcatDataset(val_ds),
+                shuffle=False,
+                cfg=dl_cfg,
+                worker_init_fn=worker_init_fn,
             ),
-            test=_make_video_loader(
-                test_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
-            ),
+            test=[
+                _make_video_loader(
+                    videos, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
+                )
+                for videos in test_ds
+            ],
         )
     return DataLoaders(
         train=_make_loader(
