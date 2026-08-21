@@ -40,7 +40,9 @@ class T50Video(Dataset):
         self.target_transform = target_transform
 
     def __len__(self):
-        return len(self.frames)
+        # One item == one whole video. Returning the frame count here would
+        # make a DataLoader iterate the same video once per frame.
+        return 1
 
     def get_binary_labels(self, labels):
         # Same encoding as the reference loader.
@@ -115,7 +117,7 @@ class CholecT50Video(CholecT50):
         iterable_dataset = []
         for video in self.train_records:
             dataset = self._make_video_dataset(video, transform)
-            if len(dataset) > 0:
+            if len(dataset.frames) > 0:
                 iterable_dataset.append(dataset)
         if len(iterable_dataset) == 0:
             raise ValueError("Train dataset is empty (check videos directory).")
@@ -125,7 +127,7 @@ class CholecT50Video(CholecT50):
         iterable_dataset = []
         for video in self.val_records:
             dataset = self._make_video_dataset(video, transform)
-            if len(dataset) > 0:
+            if len(dataset.frames) > 0:
                 iterable_dataset.append(dataset)
         if len(iterable_dataset) == 0:
             raise ValueError("Val dataset is empty (check videos directory).")
@@ -135,7 +137,7 @@ class CholecT50Video(CholecT50):
         iterable_dataset = []
         for video in self.test_records:
             dataset = self._make_video_dataset(video, transform)
-            if len(dataset) > 0:
+            if len(dataset.frames) > 0:
                 iterable_dataset.append(dataset)
         self.test_dataset = iterable_dataset
 
