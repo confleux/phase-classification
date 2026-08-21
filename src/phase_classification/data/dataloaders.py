@@ -52,11 +52,36 @@ def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLo
     )
 
 
+def _make_video_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLoader:
+    """DataLoader yielding one whole video per step (batch_size forced to 1)."""
+    if cfg.num_workers > 0 and cfg.prefetch_factor is not None:
+        kwargs = {"prefetch_factor": cfg.prefetch_factor}
+    else:
+        kwargs = {}
+    return DataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=cfg.num_workers,
+        shuffle=shuffle,
+        pin_memory=cfg.pin_memory,
+        persistent_workers=cfg.persistent_workers and cfg.num_workers > 0,
+        worker_init_fn=worker_init_fn,
+        **kwargs,
+    )
+
+
 def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     """Build train/val/test dataloaders from an experiment config.
 
     Requires the dataset root to be present on disk (raises
     :class:`DatasetUnavailableError` otherwise).
+
+    ``dataset.loader`` selects the style:
+      - "frame" (default): per-frame/window batches as configured by
+        ``dataloader.*``.
+      - "video": one video per iteration; ``batch_size`` is forced to 1 and
+        ``drop_last`` ignored. The test loader iterates over per-video test
+        datasets.
     """
     missing = check_paths(cfg)
     if missing:
@@ -69,6 +94,18 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     torch.manual_seed(seed)
     worker_init_fn = partial(_seed_worker, seed=seed)
     dl_cfg = cfg.dataloader
+    if cfg.dataset.loader == "video":
+        return DataLoaders(
+            train=_make_video_loader(
+                train_ds, shuffle=dl_cfg.shuffle, cfg=dl_cfg, worker_init_fn=worker_init_fn
+            ),
+            val=_make_video_loader(
+                val_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
+            ),
+            test=_make_video_loader(
+                test_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
+            ),
+        )
     return DataLoaders(
         train=_make_loader(
             train_ds, shuffle=dl_cfg.shuffle, cfg=dl_cfg, worker_init_fn=worker_init_fn
