@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import partial
 
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset
 
 from phase_classification.config import ExperimentConfig
 from phase_classification.data.builders import build_dataset
@@ -27,15 +27,11 @@ def _seed_worker(worker_id: int, seed: int) -> None:
 
 @dataclass
 class DataLoaders:
-    """Named train/val/test dataloaders for the training loop.
-
-    In ``dataset.loader == "video"`` mode ``test`` is a *list* of per-video
-    dataloaders (one whole video per step) instead of a single loader.
-    """
+    """Named train/val/test dataloaders for the training loop."""
 
     train: DataLoader
     val: DataLoader
-    test: DataLoader | list[DataLoader]
+    test: DataLoader
 
 
 def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLoader:
@@ -56,36 +52,15 @@ def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLo
     )
 
 
-def _make_video_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLoader:
-    """DataLoader yielding one whole video per step (batch_size forced to 1)."""
-    if cfg.num_workers > 0 and cfg.prefetch_factor is not None:
-        kwargs = {"prefetch_factor": cfg.prefetch_factor}
-    else:
-        kwargs = {}
-    return DataLoader(
-        dataset,
-        batch_size=1,
-        num_workers=cfg.num_workers,
-        shuffle=shuffle,
-        pin_memory=cfg.pin_memory,
-        persistent_workers=cfg.persistent_workers and cfg.num_workers > 0,
-        worker_init_fn=worker_init_fn,
-        **kwargs,
-    )
-
-
 def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     """Build train/val/test dataloaders from an experiment config.
 
     Requires the dataset root to be present on disk (raises
     :class:`DatasetUnavailableError` otherwise).
 
-    ``dataset.loader`` selects the style:
-      - "frame" (default): per-frame/window batches as configured by
-        ``dataloader.*``.
-      - "video": one video per iteration; ``batch_size`` is forced to 1 and
-        ``drop_last`` ignored. The test loader iterates over per-video test
-        datasets.
+    Datasets are per-frame (``sequence_length == 1``) or fixed-length temporal
+    windows (``sequence_length >= 2``, required by temporal models such as the
+    MS-TCN).
     """
     missing = check_paths(cfg)
     if missing:
@@ -98,29 +73,6 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     torch.manual_seed(seed)
     worker_init_fn = partial(_seed_worker, seed=seed)
     dl_cfg = cfg.dataloader
-    if cfg.dataset.loader == "video":
-        # train/val are lists of per-video datasets -> concatenate into one
-        # dataset; each item is a whole video (batch_size forced to 1).
-        return DataLoaders(
-            train=_make_video_loader(
-                ConcatDataset(train_ds),
-                shuffle=dl_cfg.shuffle,
-                cfg=dl_cfg,
-                worker_init_fn=worker_init_fn,
-            ),
-            val=_make_video_loader(
-                ConcatDataset(val_ds),
-                shuffle=False,
-                cfg=dl_cfg,
-                worker_init_fn=worker_init_fn,
-            ),
-            test=[
-                _make_video_loader(
-                    videos, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
-                )
-                for videos in test_ds
-            ],
-        )
     return DataLoaders(
         train=_make_loader(
             train_ds, shuffle=dl_cfg.shuffle, cfg=dl_cfg, worker_init_fn=worker_init_fn

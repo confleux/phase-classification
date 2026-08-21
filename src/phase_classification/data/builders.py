@@ -7,7 +7,6 @@ datasets can register here, keyed on the leading token of ``dataset_variant``.
 
 from phase_classification.config.dataset import DatasetConfig
 from phase_classification.data.cholec_t50 import CholecT50
-from phase_classification.data.video_loader import CholecT50Video
 
 
 class DatasetRegistryError(Exception):
@@ -24,9 +23,8 @@ def build_dataset(cfg: DatasetConfig) -> CholecT50:
     ``.test_dataset`` and ``.build() -> (train, val, test)`` torch Datasets,
     plus ``.train_records/.val_records/.test_records``.
 
-    ``cfg.loader`` selects the style:
-      - "frame": per-frame (or per-window) datasets (default)
-      - "video": one video per item (:class:`CholecT50Video`)
+    Per-frame (or per-window, when ``sequence_length > 1``) datasets are used;
+    temporal models such as the MS-TCN consume fixed-length windows.
     """
     if not cfg.dataset_variant.startswith(SUPPORTED_DATASET_PREFIX):
         raise DatasetRegistryError(
@@ -34,8 +32,7 @@ def build_dataset(cfg: DatasetConfig) -> CholecT50:
             f"(expected a '{SUPPORTED_DATASET_PREFIX}*' variant)."
         )
 
-    cls = CholecT50Video if cfg.loader == "video" else CholecT50
-    return cls(
+    return CholecT50(
         dataset_dir=str(cfg.root_dir),
         dataset_variant=cfg.dataset_variant,
         test_fold=cfg.test_fold,

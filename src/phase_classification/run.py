@@ -82,13 +82,7 @@ def _set_s3_env(mlflow_cfg) -> None:
 
 
 def _test_loaders(dl, dataloader_cfg) -> list[DataLoader]:
-    """Per-video dataloaders for the CholecT50 test split (a list of datasets).
-
-    In ``dataset.loader == "video"`` mode ``dl.test`` is already a list of
-    per-video dataloaders; in frame mode we build one loader per test dataset.
-    """
-    if isinstance(dl.test, list):
-        return dl.test
+    """Per-video dataloaders for the CholecT50 test split (a list of datasets)."""
     datasets = dl.test.dataset
     loaders = []
     for ds in datasets:

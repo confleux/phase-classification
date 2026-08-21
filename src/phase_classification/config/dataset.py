@@ -51,8 +51,6 @@ DATA_AUGMENTATION_STR = (
 
 CROSSVAL_VARIANTS = ("cholect45-crossval", "cholect50-crossval")
 
-LoaderStyle = Literal["frame", "video"]
-
 
 class DatasetConfig(StrictModel):
     """Dataset and preprocessing configuration.
@@ -70,7 +68,6 @@ class DatasetConfig(StrictModel):
     image_size: tuple[int, int] = (256, 448)
     normalize: bool = True
     video_ids: list[int] | None = None
-    loader: LoaderStyle = "frame"
 
     @model_validator(mode="after")
     def _crossval_test_fold(self) -> DatasetConfig:

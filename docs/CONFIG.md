@@ -76,7 +76,6 @@ The config has 8 top-level sections. All are optional except `dataset`.
 | `image_size` | [h, w] | `[256, 448]` | *(not wired)* the vendored loader hard-codes `256x448` |
 | `normalize` | bool | `true` | ImageNet normalization |
 | `video_ids` | list[int] \| null | `null` | *(not wired)* optional explicit video override |
-| `loader` | str | `frame` | `frame` = per-frame/window batches; `video` = one whole video per iteration (`batch_size` forced to 1, `drop_last` ignored) |
 
 `dataset_variant` must start with `cholect`, otherwise `DatasetRegistryError`.
 Crossval variants map `test_fold` to the held-out fold; non-crossval variants use
