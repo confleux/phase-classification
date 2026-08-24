@@ -52,6 +52,7 @@ training:
   step_size: 10
   gamma: 0.1
   loss: cross_entropy
+  class_weighting: inverse # per-class weights from train-split frequencies
   heads: [phase]
   grad_clip_norm: null
 

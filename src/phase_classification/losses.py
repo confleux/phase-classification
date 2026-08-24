@@ -27,6 +27,35 @@ def head_index(name: str) -> int:
     return HEAD_TUPLE_INDEX[name]
 
 
+def compute_class_weights(
+    loader,
+    heads: list[str],
+    num_classes: dict[str, int],
+    max_count: float = 1e6,
+) -> dict[str, torch.Tensor]:
+    """Compute inverse-frequency class weights from a dataloader's labels.
+
+    Iterates once over ``loader`` (no model forward), accumulating per-head
+    class histograms, and returns ``head -> weight tensor of shape (K,)``
+    normalised to mean 1. Classes absent from the split get the maximum weight.
+    """
+    counts = {h: torch.zeros(num_classes[h], dtype=torch.float64) for h in heads}
+    for _, labels in loader:
+        for h in heads:
+            t = labels[HEAD_TUPLE_INDEX[h]]
+            if t.ndim == 3:  # (B, L, K) sequence -> flatten frames
+                t = t.reshape(-1, t.shape[-1])
+            idx = t.argmax(dim=1)
+            counts[h] += torch.bincount(idx, minlength=num_classes[h]).double()
+    weights: dict[str, torch.Tensor] = {}
+    for h in heads:
+        c = counts[h]
+        c[c == 0] = c.max().clamp(min=1)  # unseen classes get the mildest weight
+        w = (c.sum() / (len(c) * c)).float()  # inverse frequency, mean-1 normalised
+        weights[h] = w.clamp(max=max_count / max(c.max().item(), 1.0))
+    return weights
+
+
 def _head_target(label: torch.Tensor, device: torch.device) -> torch.Tensor:
     """Reduce a per-sample label tensor to shape ``(B, K)`` on ``device``.
 
@@ -40,23 +69,44 @@ def _head_target(label: torch.Tensor, device: torch.device) -> torch.Tensor:
 
 
 class MultiHeadLoss(nn.Module):
-    """Aggregate per-head classification losses for the configured heads."""
+    """Aggregate per-head classification losses for the configured heads.
 
-    def __init__(self, heads: list[str], loss: str = "cross_entropy"):
+    ``class_weights`` (optional, from :func:`compute_class_weights`) applies
+    inverse-frequency weighting: per-class weights in CE, ``pos_weight`` in BCE.
+    """
+
+    def __init__(
+        self,
+        heads: list[str],
+        loss: str = "cross_entropy",
+        class_weights: dict[str, torch.Tensor] | None = None,
+    ):
         super().__init__()
         self.heads = list(heads)
         self.loss = loss
+        w = class_weights or {}
         self._ce = nn.CrossEntropyLoss()
         self._bce = nn.BCEWithLogitsLoss()
+        self._weighted_ce: dict[str, nn.CrossEntropyLoss] = {
+            h: nn.CrossEntropyLoss(weight=w[h]) for h in self.heads if h in w
+        }
+        self._weighted_bce: dict[str, nn.BCEWithLogitsLoss] = {
+            h: nn.BCEWithLogitsLoss(pos_weight=w[h]) for h in self.heads if h in w
+        }
         if loss not in ("cross_entropy", "focal"):
             raise ValueError(
                 f"Unsupported loss '{loss}'. Choose from 'cross_entropy' or 'focal'."
             )
 
-    def _single(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def _single(self, name: str, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         if self.loss == "focal":
             return self._focal(logits, targets)
-        return self._ce(logits, targets.argmax(dim=1))
+        ce = self._weighted_ce.get(name, self._ce)
+        return ce(logits, targets.argmax(dim=1))
+
+    def _multi(self, name: str, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = self._weighted_bce.get(name, self._bce)
+        return bce(logits, targets)
 
     def _focal(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         probs = torch.softmax(logits, dim=1)
@@ -80,9 +130,9 @@ class MultiHeadLoss(nn.Module):
             idx = HEAD_TUPLE_INDEX[name]
             target = _head_target(labels[idx], lo.device)
             if name in SINGLE_LABEL_HEADS:
-                per_head[name] = self._single(lo, target)
+                per_head[name] = self._single(name, lo, target)
             else:
-                per_head[name] = self._bce(lo, target)
+                per_head[name] = self._multi(name, lo, target)
 
         total = sum(per_head.values(), empty()) if per_head else empty()
         per_head["total"] = total
@@ -99,13 +149,26 @@ class MSTCNLoss(nn.Module):
     smoothing loss penalises over-segmentation (each stage).
     """
 
-    def __init__(self, model, heads: list[str], tau: float = 4.0):
+    def __init__(
+        self,
+        model,
+        heads: list[str],
+        tau: float = 4.0,
+        class_weights: dict[str, torch.Tensor] | None = None,
+    ):
         super().__init__()
         self.model = model
         self.heads = list(heads)
         self.tau = tau
+        w = class_weights or {}
         self._ce = nn.CrossEntropyLoss()
         self._bce = nn.BCEWithLogitsLoss()
+        self._weighted_ce: dict[str, nn.CrossEntropyLoss] = {
+            h: nn.CrossEntropyLoss(weight=w[h]) for h in self.heads if h in w
+        }
+        self._weighted_bce: dict[str, nn.BCEWithLogitsLoss] = {
+            h: nn.BCEWithLogitsLoss(pos_weight=w[h]) for h in self.heads if h in w
+        }
 
     def _sequence_target(self, label: torch.Tensor, device: torch.device) -> torch.Tensor:
         return label.to(device).float()
@@ -133,12 +196,14 @@ class MSTCNLoss(nn.Module):
             for stage_out in stages:  # (B, L, K)
                 stage_out = stage_out.transpose(1, 2)  # (B, K, L)
                 if name in SINGLE_LABEL_HEADS:
-                    head_loss = head_loss + self._ce(
+                    ce = self._weighted_ce.get(name, self._ce)
+                    head_loss = head_loss + ce(
                         stage_out.transpose(1, 2).reshape(-1, stage_out.shape[1]),
                         target.reshape(-1, target.shape[-1]).argmax(dim=1),
                     )
                 else:
-                    head_loss = head_loss + self._bce(stage_out, target)
+                    bce = self._weighted_bce.get(name, self._bce)
+                    head_loss = head_loss + bce(stage_out, target)
                 head_loss = head_loss + self._smoothing(stage_out)
             per_head[name] = head_loss
         total = sum(per_head.values()) if per_head else torch.zeros((), device=device)

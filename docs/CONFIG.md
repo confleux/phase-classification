@@ -111,12 +111,16 @@ the built-in train/val/test split from the loader.
 | `step_size` | int | `10` | `step` LR drop interval / `plateau` patience |
 | `gamma` | float | `0.1` | factor for `step`/`plateau` |
 | `loss` | str | `cross_entropy` | `cross_entropy`, `focal` |
+| `class_weighting` | str | `none` | `none`; `inverse` = per-class weights ∝ 1/frequency computed from the train split (weighted CE, `pos_weight` in BCE) |
 | `heads` | list[str] | `["phase"]` | subset of `phase`, `tool`, `verb`, `target`, `triplet` |
 | `grad_clip_norm` | float \| null | `null` | max grad norm; disabled when `null` |
 
 Loss semantics (`losses.py`):
 - single-label heads (`phase`, `verb`) → `CE` (or `focal`)
 - multi-label heads (`tool`, `target`, `triplet`) → always `BCEWithLogits`
+- with `class_weighting: inverse`, weights are computed once from the train
+  split at run start (`compute_class_weights`) and applied as CE `weight` /
+  BCE `pos_weight` in both `MultiHeadLoss` and `MSTCNLoss`
 
 Schedulers are stepped once per epoch; `plateau` tracks the primary val metric
 and uses `mode=max` for accuracy-like metrics.

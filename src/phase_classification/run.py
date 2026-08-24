@@ -135,6 +135,18 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
     model = build_model(cfg.model, heads=cfg.training.heads)
     metric_names = list(cfg.validation.metrics)
     higher_better = _higher_is_better(metric_names)
+
+    class_weights = None
+    if cfg.training.class_weighting == "inverse":
+        from phase_classification.losses import compute_class_weights
+
+        print("Computing inverse-frequency class weights from the train split...")
+        class_weights = compute_class_weights(
+            dl.train, cfg.training.heads, cfg.model.num_classes
+        )
+        for head, w in class_weights.items():
+            print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
+
     trainer = Trainer(
         model,
         cfg.training,
@@ -143,6 +155,7 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
         num_classes=cfg.model.num_classes,
         mixed_precision=cfg.runtime.mixed_precision,
         higher_is_better=higher_better,
+        class_weights=class_weights,
     )
 
     best_metric = float("-inf") if higher_better else float("inf")

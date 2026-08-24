@@ -85,6 +85,7 @@ class Trainer:
         num_classes: dict[str, int],
         mixed_precision: str = "fp32",
         higher_is_better: bool = False,
+        class_weights: dict[str, torch.Tensor] | None = None,
     ):
         self.model = model.to(device)
         self.cfg = cfg
@@ -93,9 +94,9 @@ class Trainer:
         self.num_classes = num_classes
         self.mixed_precision = mixed_precision
         self.loss_fn = (
-            MSTCNLoss(model, cfg.heads)
+            MSTCNLoss(model, cfg.heads, class_weights=class_weights)
             if getattr(model, "is_mstcn", False)
-            else MultiHeadLoss(cfg.heads, cfg.loss)
+            else MultiHeadLoss(cfg.heads, cfg.loss, class_weights=class_weights)
         )
         self.optimizer = build_optimizer(model, cfg)
         self.scheduler = build_scheduler(
