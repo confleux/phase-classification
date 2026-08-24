@@ -28,25 +28,44 @@ def head_index(name: str) -> int:
 
 
 def compute_class_weights(
-    loader,
+    dataset,
     heads: list[str],
     num_classes: dict[str, int],
     max_count: float = 1e6,
 ) -> dict[str, torch.Tensor]:
-    """Compute inverse-frequency class weights from a dataloader's labels.
+    """Compute inverse-frequency class weights from a dataset's label files.
 
-    Iterates once over ``loader`` (no model forward), accumulating per-head
-    class histograms, and returns ``head -> weight tensor of shape (K,)``
+    Reads only the per-video JSON annotations (no image decoding), accumulating
+    per-head class histograms, and returns ``head -> weight tensor (K,)``
     normalised to mean 1. Classes absent from the split get the maximum weight.
+
+    ``dataset`` must expose ``label_data``-style access; we accept either a
+    ``CholecT50``-like object with ``train_dataset`` of per-video datasets
+    (each having ``.label_data``), or an iterable of ``(images, labels)``
+    batches (slow path, kept for compatibility).
     """
     counts = {h: torch.zeros(num_classes[h], dtype=torch.float64) for h in heads}
-    for _, labels in loader:
-        for h in heads:
-            t = labels[HEAD_TUPLE_INDEX[h]]
-            if t.ndim == 3:  # (B, L, K) sequence -> flatten frames
-                t = t.reshape(-1, t.shape[-1])
-            idx = t.argmax(dim=1)
-            counts[h] += torch.bincount(idx, minlength=num_classes[h]).double()
+
+    # Fast path: read label JSONs directly from per-video datasets.
+    video_datasets = getattr(dataset, "datasets", None)
+    if video_datasets is not None and all(
+        hasattr(ds, "label_data") for ds in video_datasets
+    ):
+        for ds in video_datasets:
+            for frame_labels in ds.label_data.values():
+                encoded = ds.get_binary_labels(frame_labels)
+                for h in heads:
+                    t = encoded[HEAD_TUPLE_INDEX[h]]
+                    counts[h] += torch.as_tensor(t, dtype=torch.float64)
+    else:  # slow fallback: iterate batches (decodes images)
+        for _, labels in dataset:
+            for h in heads:
+                t = labels[HEAD_TUPLE_INDEX[h]]
+                if t.ndim == 3:
+                    t = t.reshape(-1, t.shape[-1])
+                idx = t.argmax(dim=1)
+                counts[h] += torch.bincount(idx, minlength=num_classes[h]).double()
+
     weights: dict[str, torch.Tensor] = {}
     for h in heads:
         c = counts[h]

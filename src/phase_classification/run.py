@@ -141,8 +141,11 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
         from phase_classification.losses import compute_class_weights
 
         print("Computing inverse-frequency class weights from the train split...")
+        # Use the underlying dataset (label JSONs only) instead of the loader
+        # to avoid decoding every image just for a histogram.
+        train_dataset = dl.train.dataset
         class_weights = compute_class_weights(
-            dl.train, cfg.training.heads, cfg.model.num_classes
+            train_dataset, cfg.training.heads, cfg.model.num_classes
         )
         for head, w in class_weights.items():
             print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
