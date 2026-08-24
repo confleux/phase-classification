@@ -147,6 +147,7 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
         class_weights = compute_class_weights(
             train_dataset, cfg.training.heads, cfg.model.num_classes
         )
+        class_weights = {h: w.to(device) for h, w in class_weights.items()}
         for head, w in class_weights.items():
             print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
 
