@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--checkpoint",
         default=str(REPO_ROOT / "outputs" / "checkpoints" / "best.pt"),
-        help="Path to the trained state_dict checkpoint",
+        help="Path to the trained checkpoint (.pt/.pth)",
     )
     p.add_argument("--video", default="VID06", help="Video ID to visualize (e.g. VID06)")
     p.add_argument(
@@ -80,6 +80,41 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--head", default="phase", help="Head to visualize (default: phase)")
     return p.parse_args()
+
+
+def load_checkpoint_state(path: Path, model) -> None:
+    """Load weights into ``model`` from a checkpoint of any common format.
+
+    Handles:
+      - a raw ``state_dict`` (``OrderedDict`` of tensors),
+      - a full checkpoint ``dict`` wrapping the state under a common key
+        (``state_dict`` / ``model`` / ``model_state_dict`` / ``weights``),
+      - a pickled full ``nn.Module`` (loaded directly).
+    """
+    obj = torch.load(path, map_location="cpu")
+
+    if isinstance(obj, torch.nn.Module):
+        # Pickled full model: copy its weights into our freshly built model.
+        model.load_state_dict(obj.state_dict())
+        print(f"Loaded pickled model from {path}")
+        return
+
+    if isinstance(obj, dict):
+        for key in ("state_dict", "model", "model_state_dict", "weights"):
+            if key in obj and isinstance(obj[key], dict):
+                model.load_state_dict(obj[key])
+                print(f"Loaded state_dict under key '{key}' from {path}")
+                return
+        # Plain state_dict (no wrapper keys).
+        if all(isinstance(v, torch.Tensor) for v in obj.values()):
+            model.load_state_dict(obj)
+            print(f"Loaded raw state_dict from {path}")
+            return
+
+    raise ValueError(
+        f"Unrecognized checkpoint format in {path}. Expected a state_dict, "
+        "a dict with a 'state_dict'/'model' key, or a pickled nn.Module."
+    )
 
 
 @torch.no_grad()
@@ -143,8 +178,7 @@ def main() -> None:
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
     print("Device:", device)
     model = build_model(cfg.model, heads=cfg.training.heads)
-    state_dict = torch.load(args.checkpoint, map_location="cpu")
-    model.load_state_dict(state_dict)
+    load_checkpoint_state(Path(args.checkpoint), model)
     model.to(device)
     model.eval()
     print(f"Loaded checkpoint with {sum(p.numel() for p in model.parameters()):,} params")
