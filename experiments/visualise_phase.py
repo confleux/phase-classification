@@ -126,15 +126,23 @@ def predict_video(video_ds, model, device, head: str, seq_len: int, batch_size: 
     preds, probs, gts = [], [], []
 
     if seq_len > 1:
-        # Temporal model: feed the whole video as one windowed batch.
-        images, labels = video_ds[0]  # (L, C, H, W) window
-        images = images.unsqueeze(0).to(device)
-        logits = model(images)[head]  # (1, K, L)
-        logits = logits.squeeze(0).transpose(0, 1)  # (L, K)
-        p = torch.softmax(logits, dim=-1).cpu().numpy()
-        preds = p.argmax(-1)
-        probs = p
-        gts = labels[head_index(head)].argmax(-1).cpu().numpy()
+        # Temporal model: slide a window over the whole video and take the
+        # prediction of the last frame of each window (causal). MS-TCN models
+        # return logits of shape (B, L, K) -- frames x classes.
+        all_preds, all_probs, all_gts = [], [], []
+        for i in range(len(video_ds)):
+            images, labels = video_ds[i]  # (L, C, H, W) window, (5, L) labels
+            images = images.unsqueeze(0).to(device)
+            logits = model(images)[head]  # (1, L, K)
+            logits = logits.squeeze(0)  # (L, K)
+            p = torch.softmax(logits, dim=-1).cpu().numpy()  # (L, K)
+            # Prediction for the last frame of this window.
+            all_preds.append(p[-1].argmax(-1))
+            all_probs.append(p[-1])
+            all_gts.append(labels[head_index(head)][-1].argmax(-1).cpu().numpy())
+        preds = np.array(all_preds)
+        probs = np.array(all_probs)
+        gts = np.array(all_gts)
     else:
         # Per-frame model: batch frames.
         for start in range(0, len(video_ds), batch_size):
