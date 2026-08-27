@@ -90,13 +90,16 @@ def load_checkpoint_state(path: Path, model) -> None:
       - a full checkpoint ``dict`` wrapping the state under a common key
         (``state_dict`` / ``model`` / ``model_state_dict`` / ``weights``),
       - a pickled full ``nn.Module`` (loaded directly).
+
+    ``weights_only=False`` is used so pickled full models (which reference
+    custom classes) can be unpickled. Only load files you trust.
     """
-    obj = torch.load(path, map_location="cpu")
+    obj = torch.load(path, map_location="cpu", weights_only=False)
 
     if isinstance(obj, torch.nn.Module):
         # Pickled full model: copy its weights into our freshly built model.
         model.load_state_dict(obj.state_dict())
-        print(f"Loaded pickled model from {path}")
+        print(f"Loaded pickled model ({type(obj).__name__}) from {path}")
         return
 
     if isinstance(obj, dict):
