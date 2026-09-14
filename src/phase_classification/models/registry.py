@@ -1,9 +1,11 @@
 """Model registry: map ``(ModelConfig.name, params)`` to a torch module.
 
 Config uses loose coupling: ``model.name`` selects an implementation here and
-``model.params`` carries architecture-specific knobs unchanged.
+``model.params`` carries architecture-specific knobs unchanged. Each builder
+declares the params it accepts (with defaults); unknown keys are rejected.
 """
 
+from collections.abc import Mapping
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
@@ -16,91 +18,90 @@ class ModelRegistryError(Exception):
     """Raised when no model implementation matches the configured name."""
 
 
+_RESNET18_PARAMS: dict[str, Any] = {
+    "in_channels": 3,
+    "pretrained": False,
+    "freeze_backbone": False,
+    "features": 512,
+}
+
+_MSTCN_PARAMS: dict[str, Any] = {
+    "variant": None,  # falls back to the class's default variant
+    "pretrained": False,
+    "freeze_backbone": False,
+    "num_stages": 4,
+    "num_layers": 10,
+    "num_f_maps": 64,
+    "kernel_size": 3,
+}
+
+_SWIN_CLASSIFIER_PARAMS: dict[str, Any] = {
+    "variant": "t",
+    "pretrained": False,
+    "freeze_backbone": False,
+    "features": 512,
+}
+
+
+def _pop_params(
+    name: str, params: Mapping[str, Any], spec: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Extract known keys (with spec defaults) from ``params``; reject unknown."""
+    unknown = set(params) - set(spec)
+    if unknown:
+        raise ModelRegistryError(
+            f"Unsupported params for '{name}': {', '.join(sorted(unknown))}. "
+            f"Supported: {', '.join(sorted(spec))}."
+        )
+    return {key: params.get(key, default) for key, default in spec.items()}
+
+
 def _build_resnet18(cfg: ModelConfig, heads: list[str]) -> ResNet18Classifier:
-    params: dict[str, Any] = dict(cfg.params)
-    in_channels = params.pop("in_channels", 3)
-    pretrained = params.pop("pretrained", False)
-    freeze_backbone = params.pop("freeze_backbone", False)
-    features = params.pop("features", 512)
-    if params:
-        unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'resnet18': {unknown}")
+    p = _pop_params("resnet18", cfg.params, _RESNET18_PARAMS)
     return ResNet18Classifier(
         num_classes=cfg.num_classes,
         heads=heads,
-        in_channels=int(in_channels),
-        pretrained=bool(pretrained),
-        freeze_backbone=bool(freeze_backbone),
-        features=int(features),
+        in_channels=int(p["in_channels"]),
+        pretrained=bool(p["pretrained"]),
+        freeze_backbone=bool(p["freeze_backbone"]),
+        features=int(p["features"]),
+    )
+
+
+def _build_mstcn(
+    cfg: ModelConfig, heads: list[str], cls: type, default_variant: str, name: str
+) -> Any:
+    p = _pop_params(name, cfg.params, _MSTCN_PARAMS)
+    return cls(
+        num_classes=cfg.num_classes,
+        heads=heads,
+        variant=str(p["variant"]) if p["variant"] is not None else default_variant,
+        pretrained=bool(p["pretrained"]),
+        freeze_backbone=bool(p["freeze_backbone"]),
+        num_stages=int(p["num_stages"]),
+        num_layers=int(p["num_layers"]),
+        num_f_maps=int(p["num_f_maps"]),
+        kernel_size=int(p["kernel_size"]),
     )
 
 
 def _build_convnext_mstcn(cfg: ModelConfig, heads: list[str]) -> ConvNeXtMSTCN:
-    params: dict[str, Any] = dict(cfg.params)
-    variant = params.pop("variant", "tiny")
-    pretrained = params.pop("pretrained", False)
-    freeze_backbone = params.pop("freeze_backbone", False)
-    num_stages = params.pop("num_stages", 4)
-    num_layers = params.pop("num_layers", 10)
-    num_f_maps = params.pop("num_f_maps", 64)
-    kernel_size = params.pop("kernel_size", 3)
-    if params:
-        unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'convnext-ms-tcn': {unknown}")
-    return ConvNeXtMSTCN(
-        num_classes=cfg.num_classes,
-        heads=heads,
-        variant=str(variant),
-        pretrained=bool(pretrained),
-        freeze_backbone=bool(freeze_backbone),
-        num_stages=int(num_stages),
-        num_layers=int(num_layers),
-        num_f_maps=int(num_f_maps),
-        kernel_size=int(kernel_size),
-    )
+    return _build_mstcn(cfg, heads, ConvNeXtMSTCN, "tiny", "convnext-ms-tcn")
 
 
 def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
-    params: dict[str, Any] = dict(cfg.params)
-    variant = params.pop("variant", "t")
-    pretrained = params.pop("pretrained", False)
-    freeze_backbone = params.pop("freeze_backbone", False)
-    num_stages = params.pop("num_stages", 4)
-    num_layers = params.pop("num_layers", 10)
-    num_f_maps = params.pop("num_f_maps", 64)
-    kernel_size = params.pop("kernel_size", 3)
-    if params:
-        unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'swin-ms-tcn': {unknown}")
-    return SwinMSTCN(
-        num_classes=cfg.num_classes,
-        heads=heads,
-        variant=str(variant),
-        pretrained=bool(pretrained),
-        freeze_backbone=bool(freeze_backbone),
-        num_stages=int(num_stages),
-        num_layers=int(num_layers),
-        num_f_maps=int(num_f_maps),
-        kernel_size=int(kernel_size),
-    )
+    return _build_mstcn(cfg, heads, SwinMSTCN, "t", "swin-ms-tcn")
 
 
 def _build_swin_classifier(cfg: ModelConfig, heads: list[str]) -> SwinClassifier:
-    params: dict[str, Any] = dict(cfg.params)
-    variant = params.pop("variant", "t")
-    pretrained = params.pop("pretrained", False)
-    freeze_backbone = params.pop("freeze_backbone", False)
-    features = params.pop("features", 512)
-    if params:
-        unknown = ", ".join(sorted(params))
-        raise ModelRegistryError(f"Unsupported params for 'swin-cls': {unknown}")
+    p = _pop_params("swin-cls", cfg.params, _SWIN_CLASSIFIER_PARAMS)
     return SwinClassifier(
         num_classes=cfg.num_classes,
         heads=heads,
-        variant=str(variant),
-        pretrained=bool(pretrained),
-        freeze_backbone=bool(freeze_backbone),
-        features=int(features),
+        variant=str(p["variant"]),
+        pretrained=bool(p["pretrained"]),
+        freeze_backbone=bool(p["freeze_backbone"]),
+        features=int(p["features"]),
     )
 
 

@@ -8,12 +8,19 @@ dataset and reduced at the end. Metric names follow ``ValidationConfig.metrics``
 - ``f1_per_class`` -> per-head per-class F1 (``<head>_f1_class_<i>``)
 - ``mean_accuracy`` -> per-head mean per-class accuracy (``<head>_mean_accuracy``)
 - ``accuracy_per_class`` -> per-head per-class accuracy (``<head>_accuracy_class_<i>``)
-- ``edit_score`` -> per-head sequence-level Levenshtein edit score (``<head>_edit_score``)
+- ``edit_score`` -> per-head Levenshtein edit score (``<head>_edit_score``)
+
+One accumulator instance represents one sequence (typically one video). Use
+:meth:`MetricAccumulator.merged` to combine per-video accumulators: the
+confusion-matrix metrics are pooled over all frames, while ``edit_score``
+becomes the mean of the per-video scores (the standard Edit Score semantics).
 """
 
 from collections import defaultdict
+from collections.abc import Callable
 
 import numpy as np
+from rapidfuzz.distance import Levenshtein
 
 
 class MetricAccumulator:
@@ -25,6 +32,8 @@ class MetricAccumulator:
         self.num_classes = num_classes
         self._pred: dict[str, list[np.ndarray]] = defaultdict(list)
         self._target: dict[str, list[np.ndarray]] = defaultdict(list)
+        # Only set by :meth:`merged` for the averaged per-sequence edit score.
+        self._sequence_edit_scores: dict[str, list[float]] | None = None
 
     def _append(self, name: str, pred: np.ndarray, target: np.ndarray) -> None:
         self._pred[name].append(np.asarray(pred).reshape(-1))
@@ -45,49 +54,97 @@ class MetricAccumulator:
             tgt = np.argmax(tg, axis=1)
             self._append(name, pred, tgt)
 
+    def _concat(self, store: dict[str, list[np.ndarray]], name: str) -> np.ndarray:
+        chunks = store.get(name) or []
+        return np.concatenate(chunks) if chunks else np.array([], dtype=np.int64)
+
+    def _sequence_edit_score(self, name: str) -> float | None:
+        """Edit score over this accumulator's own (single-sequence) data."""
+        if not self._pred.get(name):
+            return None
+        return _edit_score(self._concat(self._pred, name), self._concat(self._target, name))
+
+    def _edit_score_values(self, name: str) -> dict[str, float]:
+        if self._sequence_edit_scores is not None:  # merged: average per sequence
+            scores = self._sequence_edit_scores.get(name, [])
+        else:  # single sequence
+            score = self._sequence_edit_score(name)
+            scores = [score] if score is not None else []
+        return {"edit_score": float(np.mean(scores))} if scores else {}
+
+    @classmethod
+    def merged(cls, accumulators: list[MetricAccumulator]) -> MetricAccumulator:
+        """Combine per-sequence accumulators (e.g. one per test video).
+
+        Confusion-matrix metrics are pooled over all frames; ``edit_score``
+        becomes the mean of the per-sequence scores (Edit Score semantics).
+        """
+        first = accumulators[0]
+        out = cls(first.heads, first.metric_names, first.num_classes)
+        for name in first.heads:
+            out._pred[name] = [
+                chunk for acc in accumulators for chunk in acc._pred.get(name, [])
+            ]
+            out._target[name] = [
+                chunk for acc in accumulators for chunk in acc._target.get(name, [])
+            ]
+        out._sequence_edit_scores = {}
+        for name in first.heads:
+            scores = [
+                s
+                for acc in accumulators
+                if (s := acc._sequence_edit_score(name)) is not None
+            ]
+            if scores:
+                out._sequence_edit_scores[name] = scores
+        return out
+
     def compute(self) -> dict[str, float]:
         results: dict[str, float] = {}
         for name in self.heads:
-            if name not in self._pred:
+            if not self._pred.get(name):
                 continue
-            pred = np.concatenate(self._pred[name]) if self._pred[name] else np.array([])
-            target = (
-                np.concatenate(self._target[name]) if self._target[name] else np.array([])
-            )
+            pred = self._concat(self._pred, name)
+            target = self._concat(self._target, name)
             if pred.size == 0:
                 continue
             n = int(self.num_classes.get(name, int(pred.max()) + 1))
             cm = _confusion_matrix(target, pred, n)
             for metric in self.metric_names:
-                values = self._metric_values(metric, cm, pred, target, n)
+                if metric == "edit_score":
+                    values = self._edit_score_values(name)
+                else:
+                    values = _cm_metric_values(metric, cm)
                 for key, value in values.items():
                     results[f"{name}_{key}"] = float(value)
         return results
-
-    def _metric_values(
-        self, metric: str, cm: np.ndarray, pred, target, n: int
-    ) -> dict[str, float]:
-        if metric == "edit_score":
-            return {"edit_score": _edit_score(pred, target)}
-        if metric == "jaccard":
-            return {"jaccard": _jaccard_mean(cm)}
-        if metric == "f1_macro":
-            return {"f1_macro": _f1_macro(cm)}
-        if metric == "mean_accuracy":
-            return {"mean_accuracy": _mean_accuracy(cm)}
-        if metric == "f1_per_class":
-            f1s = _per_class_f1(cm)
-            return {f"f1_class_{i}": float(v) for i, v in enumerate(f1s)}
-        if metric == "accuracy_per_class":
-            accs = _per_class_accuracy(cm)
-            return {f"accuracy_class_{i}": float(v) for i, v in enumerate(accs)}
-        raise ValueError(f"Unknown metric '{metric}'.")
 
 
 def _confusion_matrix(target, pred, n: int) -> np.ndarray:
     cm = np.zeros((n, n), dtype=np.int64)
     np.add.at(cm, (target, pred), 1)
     return cm
+
+
+# Confusion-matrix metrics, keyed by their ValidationConfig.metrics name.
+_CM_METRICS: dict[str, Callable[[np.ndarray], dict[str, float]]] = {
+    "jaccard": lambda cm: {"jaccard": _jaccard_mean(cm)},
+    "f1_macro": lambda cm: {"f1_macro": _f1_macro(cm)},
+    "mean_accuracy": lambda cm: {"mean_accuracy": _mean_accuracy(cm)},
+    "f1_per_class": lambda cm: {
+        f"f1_class_{i}": float(v) for i, v in enumerate(_per_class_f1(cm))
+    },
+    "accuracy_per_class": lambda cm: {
+        f"accuracy_class_{i}": float(v) for i, v in enumerate(_per_class_accuracy(cm))
+    },
+}
+
+
+def _cm_metric_values(metric: str, cm: np.ndarray) -> dict[str, float]:
+    fn = _CM_METRICS.get(metric)
+    if fn is None:
+        raise ValueError(f"Unknown metric '{metric}'.")
+    return fn(cm)
 
 
 def _per_class_accuracy(cm: np.ndarray) -> np.ndarray:
@@ -132,35 +189,19 @@ def _f1_macro(cm: np.ndarray) -> float:
     return float(_per_class_f1(cm).mean())
 
 
-def _edit_score(pred: np.ndarray, target: np.ndarray) -> float:
-    """Sequence-level Edit Score = 1 - normalised Levenshtein distance.
+def _edit_score(pred, target) -> float:
+    """Edit Score = 1 - normalised Levenshtein distance over one sequence.
 
     The predicted and target class sequences are compared with the Levenshtein
-    distance (insertions + deletions + substitutions). The score lies in
-    [0, 1] and is higher when the predicted sequence matches the ground-truth
-    sequence more closely.
+    distance (insertions + deletions + substitutions). The score lies in [0, 1]
+    and is higher when the predicted sequence matches the ground-truth sequence
+    more closely.
     """
     denom = max(len(pred), len(target))
     if denom == 0:
         return 0.0
-    lev = _levenshtein(np.asarray(pred, dtype=np.int64), np.asarray(target, dtype=np.int64))
+    lev = Levenshtein.distance(
+        np.asarray(pred, dtype=np.int64).tolist(),
+        np.asarray(target, dtype=np.int64).tolist(),
+    )
     return float(1.0 - lev / denom)
-
-
-def _levenshtein(a: np.ndarray, b: np.ndarray) -> int:
-    """Wagner-Fischer Levenshtein distance between two integer sequences."""
-    n, m = len(a), len(b)
-    if n == 0:
-        return m
-    if m == 0:
-        return n
-    prev = list(range(m + 1))
-    curr = [0] * (m + 1)
-    for i in range(1, n + 1):
-        ai = a[i - 1]
-        curr[0] = i
-        for j in range(1, m + 1):
-            cost = 0 if ai == b[j - 1] else 1
-            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
-        prev, curr = curr, prev
-    return prev[m]

@@ -5,8 +5,10 @@ from collections.abc import Mapping
 import torch
 from torch import nn
 
+from phase_classification.models.backbones import _HeadClassifierBase
 
-class ResNet18Classifier(nn.Module):
+
+class ResNet18Classifier(_HeadClassifierBase):
     """ResNet18 backbone + a linear classifier head per configured label head.
 
     Supports optionally loading ImageNet-pretrained weights and freezing the
@@ -24,10 +26,9 @@ class ResNet18Classifier(nn.Module):
         freeze_backbone: bool = False,
         features: int = 512,
     ):
-        super().__init__()
         from torchvision.models import ResNet18_Weights, resnet18
 
-        self.heads = list(heads)
+        super().__init__(num_classes, heads, backbone_dim=512, features=features)
         self.backbone = resnet18(
             weights=ResNet18_Weights.DEFAULT if pretrained else None
         )
@@ -36,26 +37,9 @@ class ResNet18Classifier(nn.Module):
                 in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False
             )
         self.backbone.fc = nn.Identity()
-        self.features = features
-        self.project = nn.Linear(512, features)
-        self.heads_block: nn.ModuleDict = nn.ModuleDict(
-            {
-                name: nn.Linear(features, num_classes[name])
-                for name in self.heads
-                if name in num_classes
-            }
-        )
         if freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad_(False)
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        x = x.float()
-        if x.ndim == 5:  # (B, L, C, H, W) temporal window
-            b, length = x.shape[0], x.shape[1]
-            x = x.flatten(0, 1)
-            feats = self.project(self.backbone(x))
-            feats = feats.view(b, length, -1).mean(dim=1)
-        else:  # (B, C, H, W) single frame
-            feats = self.project(self.backbone(x))
-        return {name: head(feats) for name, head in self.heads_block.items()}
+    def _encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)

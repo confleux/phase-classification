@@ -27,11 +27,16 @@ def _seed_worker(worker_id: int, seed: int) -> None:
 
 @dataclass
 class DataLoaders:
-    """Named train/val/test dataloaders for the training loop."""
+    """Train/val dataloaders plus the per-video datasets of the test split.
+
+    The CholecT50 test split is a list of per-video datasets (each video is a
+    sequence for edit-score evaluation); use :func:`build_test_loaders` to
+    wrap them.
+    """
 
     train: DataLoader
     val: DataLoader
-    test: DataLoader
+    test: list[Dataset]
 
 
 def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLoader:
@@ -50,6 +55,15 @@ def _make_loader(dataset: Dataset, shuffle: bool, cfg, worker_init_fn) -> DataLo
         worker_init_fn=worker_init_fn,
         **kwargs,
     )
+
+
+def build_test_loaders(dl: DataLoaders, cfg: ExperimentConfig) -> list[DataLoader]:
+    """Per-video test dataloaders honouring the configured DataLoader knobs."""
+    worker_init_fn = partial(_seed_worker, seed=cfg.runtime.seed)
+    return [
+        _make_loader(ds, shuffle=False, cfg=cfg.dataloader, worker_init_fn=worker_init_fn)
+        for ds in dl.test
+    ]
 
 
 def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
@@ -80,7 +94,5 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
         val=_make_loader(
             val_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
         ),
-        test=_make_loader(
-            test_ds, shuffle=False, cfg=dl_cfg, worker_init_fn=worker_init_fn
-        ),
+        test=test_ds,
     )

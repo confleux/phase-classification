@@ -14,12 +14,13 @@ import sys
 from collections.abc import Callable
 
 from phase_classification.config import ExperimentConfig
+from phase_classification.heads import HEAD_TUPLE_INDEX
 from phase_classification.loader import ConfigLoadError, check_paths, load_config
 
 PROG = "phase-cls"
 
 # Label head order returned by the vendored CholecT50 loader.
-LABEL_KEYS = ("triplet", "tool", "verb", "target", "phase")
+LABEL_KEYS = tuple(HEAD_TUPLE_INDEX)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,26 +114,18 @@ def cmd_build_dataloaders(args: argparse.Namespace) -> None:
     from torch.utils.data import DataLoader as TorchDataLoader
 
     for name in ("train", "val", "test"):
-        loader = getattr(dl, name)
-        ds = loader.dataset
-        if isinstance(
-            ds, list
-        ):  # reference loader stores test as a list of video datasets
-            print(f"{name}: {len(ds)} video sub-datasets")
-            first, *_ = ds
-            images, labels = next(iter(TorchDataLoader(first, batch_size=1)))
+        obj = getattr(dl, name)
+        if isinstance(obj, list):  # test split: per-video datasets
+            print(f"{name}: {len(obj)} video sub-datasets", end="")
+            images, labels = next(iter(TorchDataLoader(obj[0], batch_size=1)))
+            print(f", first batch={tuple(images.shape)}")
         else:
-            images, labels = next(iter(loader))
-            print(f"{name}: {len(ds)} samples", end="")
-            first = None
+            images, labels = next(iter(obj))
+            print(f"{name}: {len(obj.dataset)} samples, batch={tuple(images.shape)}")
         shapes = ", ".join(
             f"{key}: {tuple(t.shape)}"
             for key, t in zip(LABEL_KEYS, labels, strict=False)
         )
-        if first is None:
-            print(f", batch={tuple(images.shape)}")
-        else:
-            print(f", first batch={tuple(images.shape)}")
         print(f"    labels {shapes}")
 
 

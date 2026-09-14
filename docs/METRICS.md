@@ -28,6 +28,11 @@ over the head's `num_classes` is accumulated across the whole split, then reduce
 > - A class that never appears in a split contributes **0** to every aggregate
 >   and per-class metric below (its TP/FN/FPs are all 0). This lower-bounds the
 >   aggregates when a class is absent from a small split.
+> - **fp16 eval runs in fp32.** With `runtime.mixed_precision: fp16`, the
+>   training forward pass runs under `torch.amp.autocast`, but the evaluation
+>   path (`Trainer.evaluate_accumulate`) calls the model directly without
+>   autocast, so `val_*`/`test_*` metrics are computed in fp32 while training is
+>   fp16. This is a known inconsistency (documented, not yet fixed).
 
 ## Available metrics
 
@@ -44,9 +49,7 @@ Where `tp` = diagonal of the confusion matrix (correctly predicted per class),
 | `jaccard` | mean of per-class IoU `tp/(tp+fn+fp)` | 0–1 | mean intersection-over-union; absent class → 0 |
 | `f1_macro` | mean of per-class F1 `2·P·R/(P+R)` | 0–1 | F1@Macro; each class weighted equally; absent class → 0 |
 | `mean_accuracy` | mean of per-class accuracy `tp/(tp+fn)` over all `n` classes | 0–1 | *balanced accuracy*; absent class → 0 |
-| `edit_score` | `1 − Levenshtein(pred, target) / max(len(pred), len(target))` | 0–1 | **sequence-level**; higher = closer order/transitions (see below) |
-
-### Per-class metrics
+| `edit_score` | `1 − Levenshtein(pred, target) / max(len(pred), len(target))` | 0–1 | **sequence-level**; higher = closer order/transitions (see below) |### Per-class metrics
 
 | Config name | Definition | Emits (per head) |
 |---|---|---|
@@ -61,16 +64,19 @@ individually; each class contributes `0` when it is absent from the split.
 Unlike the confusion-matrix metrics, `edit_score` compares the **ordered
 sequence** of predicted class indices against the ordered ground-truth sequence
 using the Levenshtein distance (minimum insertions + deletions + substitutions
-to turn one sequence into the other). It is normalised by the longer sequence and
-inverted, giving `1` for an exact order match and `0` for a complete mismatch —
-a higher score means the model better captures the correct order and transitions
-of action segments.
+to turn one sequence into the other, computed with the C-backed
+[rapidfuzz](https://github.com/rapidfuzz/RapidFuzz) implementation). It is
+normalised by the longer sequence and inverted, giving `1` for an exact order
+match and `0` for a complete mismatch — a higher score means the model better
+captures the correct order and transitions of action segments.
 
-Implementation (`metrics.py:_levenshtein`, Wagner–Fischer DP):
-- Per-sample predicted and target class indices are accumulated across batches
-  **in order** and concatenated into one sequence per head per split.
-- The DP is `O(n·m)` in the sequence lengths, which may be costly on very long
-  concatenated splits.
+Implementation (`metrics.py:_edit_score`, `MetricAccumulator.merged`):
+- One accumulator instance represents **one sequence** — for the `test` split
+  that is one video (per-video dataloaders from `build_test_loaders`).
+- The test `edit_score` is the **mean of the per-video scores** (standard Edit
+  Score semantics); confusion-matrix metrics are still pooled over all frames.
+- For `val` (a single sequential loader over the whole split) the score is
+  computed over the concatenated split sequence.
 - **Caveats.**
   - `edit_score` is only temporally meaningful when samples arrive in sequence
     order. `val`/`test` loaders use `shuffle=False`, so it holds there. The
@@ -108,7 +114,7 @@ see in MLflow:
 |---|---|---|
 | `train_*` | computed during each training epoch (argmax from the live training forward pass) | `step = epoch` |
 | `val_*` | evaluated once per epoch on the validation split | `step = epoch` |
-| `test_*` | evaluated once after training on the held-out test split (per-video datasets merged) | end of run |
+| `test_*` | evaluated once after training on the held-out test split (per-video accumulators merged: pooled CM metrics, mean per-video `edit_score`) | end of run |
 | `train_loss` | mean of the aggregated per-head loss over the training epoch | `step = epoch` |
 
 A single epoch therefore logs: `train_loss`, all `train_*`, and all `val_*`

@@ -14,7 +14,6 @@ import yaml
 from pydantic import ValidationError
 
 from phase_classification.config import ExperimentConfig
-from phase_classification.config.dataset import CHOLEC50_VARIANT_STR
 
 
 class ConfigLoadError(Exception):
@@ -67,8 +66,3 @@ def check_paths(cfg: ExperimentConfig, dataset_root: Path | None = None) -> list
     if not labels_dir.is_dir():
         missing.append(f"missing 'labels' dir under {root}")
     return missing
-
-
-def known_dataset_variants() -> tuple[str, ...]:
-    """Return the CholecT50 dataset variants the schema accepts."""
-    return CHOLEC50_VARIANT_STR

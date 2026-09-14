@@ -29,10 +29,9 @@ uv run phase-cls train configs/my.yaml
 You only need to write the fields you want to override. Everything else falls
 back to the schema defaults below.
 
-> **Wired vs. schema-only.** Several fields are defined in the schema for future
-> use but are **not yet read** by the engine/runner. They are marked
-> *(not wired)* below — setting them has no effect (except `validation.batch_size`,
-> which raises `RunError`).
+> **Note.** Every field below is wired into the code — there are no
+> schema-only placeholders. Setting an unknown field raises a validation
+> error (strict schema).
 
 ---
 
@@ -58,7 +57,6 @@ The config has 8 top-level sections. All are optional except `dataset`.
 | Field | Type | Default | Allowed / notes |
 |---|---|---|---|
 | `name` | str | `phase-classification` | free-form |
-| `seed` | int | `42` | *(not wired)* global seed |
 | `output_dir` | Path | `outputs` | best checkpoint → `outputs/checkpoints/best.pt` |
 | `save_checkpoints` | bool | `true` | if `false`, skips local checkpoint + `mlflow.pytorch.log_model` |
 
@@ -73,9 +71,10 @@ The config has 8 top-level sections. All are optional except `dataset`.
 | `test_fold` | int | `1` | `1..5` (only meaningful for `*-crossval`) |
 | `sequence_length` | int | `1` | `1` = single frame (`T50`); `>=2` = temporal windows (`T50Sequence`) |
 | `augmentations` | list[str] | `["original"]` | `original`, `vflip`, `hflip`, `contrast`, `rot90`, `brightness`, `random_contrast` |
-| `image_size` | [h, w] | `[256, 448]` | *(not wired)* the vendored loader hard-codes `256x448` |
 | `normalize` | bool | `true` | ImageNet normalization |
-| `video_ids` | list[int] \| null | `null` | *(not wired)* optional explicit video override |
+
+Frames are resized to the loader's fixed **256x448** (`image_size` is not
+configurable).
 
 `dataset_variant` must start with `cholect`, otherwise `DatasetRegistryError`.
 Crossval variants map `test_fold` to the held-out fold; non-crossval variants use
@@ -101,8 +100,7 @@ the built-in train/val/test split from the loader.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `epochs` | int | `50` | `>= 1` |
-| `batch_size` | int | `32` | *(not wired)* use `dataloader.batch_size` instead |
+| `epochs` | int | `50` | `>= 1` (mini-batch size comes from `dataloader.batch_size`) |
 | `optimizer` | str | `adamw` | `sgd`, `adam`, `adamw` |
 | `learning_rate` | float | `0.001` | `> 0` |
 | `weight_decay` | float | `0.0` | `>= 0` |
@@ -131,7 +129,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`) |
+| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `swin-cls` (alias `swin-classifier`) |
 | `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -187,6 +185,35 @@ Produces **per-frame** predictions `(B, L, K)`; trained with the MS-TCN loss
 (per-stage CE + truncated-MSE smoothing via `MSTCNLoss`). Metrics are computed
 per frame. See `configs/ms-tcn.yaml` for a full example.
 
+`swin-ms-tcn` (Swin Transformer frame encoder + multi-stage MS-TCN temporal
+head in `models/ms_tcn.py`; **requires `dataset.sequence_length >= 2`**):
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `variant` | str | `t` | Swin variant: `t`/`s`/`b` |
+| `pretrained` | bool | `false` | ImageNet weights for the Swin encoder |
+| `freeze_backbone` | bool | `false` | freeze the Swin encoder; only the temporal head trains |
+| `num_stages` | int | `4` | number of MS-TCN stages |
+| `num_layers` | int | `10` | dilated temporal layers per stage |
+| `num_f_maps` | int | `64` | hidden channels of the temporal convs |
+| `kernel_size` | int | `3` | temporal conv kernel size |
+
+Same per-frame `(B, L, K)` output and `MSTCNLoss` training as
+`convnext-ms-tcn`, but with a Swin encoder. See `configs/swin-ms-tcn.yaml`.
+
+`swin-cls` (Swin Transformer encoder + per-head classifier in
+`models/swin_classifier.py`; alias `swin-classifier`):
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `variant` | str | `t` | Swin variant: `t`/`s`/`b` |
+| `pretrained` | bool | `false` | ImageNet weights for the Swin encoder |
+| `freeze_backbone` | bool | `false` | freeze the Swin encoder; only `project` + classifier heads train |
+| `features` | int | `512` | feature dim before the classifier heads |
+
+Like `resnet18`, accepts single frames or temporal windows (mean-pooled over
+time) and emits per-head logits `(B, K)`.
+
 ---
 
 ## `validation`
@@ -194,15 +221,19 @@ per frame. See `configs/ms-tcn.yaml` for a full example.
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `metrics` | list[str] | all six below | `jaccard`, `f1_macro`, `f1_per_class`, `mean_accuracy`, `accuracy_per_class`, `edit_score` |
-| `checkpoint_path` | Path \| null | `null` | *(not wired)* |
-| `top_k` | int | `1` | *(not wired)* |
-| `batch_size` | int \| null | `null` | **raises `RunError` if set** (not wired) |
 
 Each metric is computed per head; aggregates are reported as `<head>_<metric>`
 (e.g. `phase_jaccard`) while per-class metrics expand to
 `<head>_<metric>_<i>` per class (e.g. `phase_f1_class_0`). Exactly one aggregate
 metric should be listed first to serve as the "primary val metric" used for
 best-checkpoint selection.
+
+> **Primary metric caveat.** The first metric in `metrics` is used for
+> best-checkpoint selection via the key `val_<head>_<metric>`. Per-class metrics
+> (`f1_per_class`, `accuracy_per_class`) emit per-class keys
+> (`val_<head>_f1_class_<i>`), so they **cannot** serve as the primary metric —
+> if listed first, best-checkpoint selection silently never fires. Put an
+> aggregate metric (e.g. `jaccard`, `f1_macro`) first.
 
 ---
 
@@ -243,8 +274,7 @@ Every run automatically logs:
 | `device` | str | `auto` | `auto`, `cpu`, `cuda` |
 | `cuda_device` | int \| null | `null` | requires `device` in `auto`/`cuda` |
 | `mixed_precision` | str | `fp32` | `fp32`, `fp16` (AMP) |
-| `seed` | int | `42` | DataLoader worker seeding |
-| `num_workers` | int | `4` | *(not wired)* use `dataloader.num_workers` |
+| `seed` | int | `42` | global torch seed + DataLoader worker seeding |
 
 ---
 

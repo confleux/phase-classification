@@ -11,18 +11,10 @@ from typing import Any, Literal
 from pydantic import Field, model_validator
 
 from phase_classification.config.base import StrictModel
+from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
 
-HEAD_NAMES = ("phase", "tool", "verb", "target", "triplet")
-HEAD_LITERAL = Literal["phase", "tool", "verb", "target", "triplet"]
-
-# CholecT50 label space. Numbers are dataset facts, not architecture facts.
-DEFAULT_NUM_CLASSES = {
-    "phase": 7,
-    "tool": 6,
-    "verb": 10,
-    "target": 15,
-    "triplet": 100,
-}
+HEAD_NAMES = tuple(HEAD_TUPLE_INDEX)
+HEAD_LITERAL = Literal[HEAD_NAMES]
 
 
 class ModelConfig(StrictModel):
@@ -50,7 +42,3 @@ class ModelConfig(StrictModel):
         if any(n < 1 for n in self.num_classes.values()):
             raise ValueError("num_classes values must be >= 1.")
         return self
-
-    @classmethod
-    def known_heads(cls) -> tuple[str, ...]:
-        return HEAD_NAMES

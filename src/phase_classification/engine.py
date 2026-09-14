@@ -13,7 +13,8 @@ from torch import nn
 from tqdm import tqdm
 
 from phase_classification.config.training import TrainingConfig
-from phase_classification.losses import MSTCNLoss, MultiHeadLoss, head_index
+from phase_classification.heads import head_index
+from phase_classification.losses import MSTCNLoss, MultiHeadLoss
 from phase_classification.metrics import MetricAccumulator
 
 
@@ -23,7 +24,9 @@ def resolve_device(name: str, cuda_device: int | None = None) -> torch.device:
     if name == "cuda":
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA requested but torch.cuda is not available.")
-        return torch.device(f"cuda:{cuda_device}" if cuda_device is not None else "cuda")
+        return torch.device(
+            f"cuda:{cuda_device}" if cuda_device is not None else "cuda"
+        )
     if name != "auto":
         raise ValueError(f"Unknown device '{name}'.")
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -39,7 +42,9 @@ def build_optimizer(model: nn.Module, cfg: TrainingConfig) -> torch.optim.Optimi
             weight_decay=cfg.weight_decay,
         )
     if cfg.optimizer == "adam":
-        return torch.optim.Adam(params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
+        return torch.optim.Adam(
+            params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay
+        )
     if cfg.optimizer == "adamw":
         return torch.optim.AdamW(
             params, lr=cfg.learning_rate, weight_decay=cfg.weight_decay
@@ -50,9 +55,9 @@ def build_optimizer(model: nn.Module, cfg: TrainingConfig) -> torch.optim.Optimi
 def build_scheduler(
     optimizer: torch.optim.Optimizer,
     cfg: TrainingConfig,
-    steps_per_epoch: int,
     higher_is_better: bool = False,
 ) -> torch.optim.lr_scheduler.LRScheduler | None:
+    """Build the configured LR scheduler (stepped once per epoch)."""
     if cfg.scheduler == "none":
         return None
     if cfg.scheduler == "step":
@@ -60,8 +65,9 @@ def build_scheduler(
             optimizer, step_size=cfg.step_size, gamma=cfg.gamma
         )
     if cfg.scheduler == "cosine":
+        # One step per epoch, so T_max is the total number of epochs.
         return torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=cfg.epochs * steps_per_epoch
+            optimizer, T_max=cfg.epochs
         )
     if cfg.scheduler == "plateau":
         return torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -100,7 +106,7 @@ class Trainer:
         )
         self.optimizer = build_optimizer(model, cfg)
         self.scheduler = build_scheduler(
-            self.optimizer, cfg, steps_per_epoch=1, higher_is_better=higher_is_better
+            self.optimizer, cfg, higher_is_better=higher_is_better
         )
         self.scaler = (
             torch.amp.GradScaler("cuda") if mixed_precision == "fp16" else None
@@ -119,6 +125,19 @@ class Trainer:
                 return self.model(images)
         return self.model(images)
 
+    def _accumulate_batch(
+        self,
+        logits: dict[str, torch.Tensor],
+        labels: tuple[torch.Tensor, ...],
+        accumulator: MetricAccumulator,
+    ) -> None:
+        """Feed one batch's logits/labels into a metric accumulator."""
+        logits_np = {name: logits[name].detach().cpu().numpy() for name in logits}
+        targets = {
+            name: labels[head_index(name)].cpu().numpy() for name in self.cfg.heads
+        }
+        accumulator.add_batch(logits_np, targets)
+
     def training_step(
         self,
         images,
@@ -129,27 +148,24 @@ class Trainer:
         self.optimizer.zero_grad(set_to_none=True)
         logits = self._forward(images)
         if accumulator is not None:
-            logits_np = {
-                name: logits[name].detach().cpu().numpy() for name in logits
-            }
-            targets = {
-                name: labels[head_index(name)].cpu().numpy()
-                for name in self.cfg.heads
-            }
-            accumulator.add_batch(logits_np, targets)
+            self._accumulate_batch(logits, labels, accumulator)
         losses = self.loss_fn(logits, labels)
         loss = losses["total"]
         if self.scaler is not None:
             self.scaler.scale(loss).backward()
             if self.cfg.grad_clip_norm is not None:
                 self.scaler.unscale_(self.optimizer)
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+                nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.cfg.grad_clip_norm
+                )
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
             loss.backward()
             if self.cfg.grad_clip_norm is not None:
-                nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.grad_clip_norm)
+                nn.utils.clip_grad_norm_(
+                    self.model.parameters(), self.cfg.grad_clip_norm
+                )
             self.optimizer.step()
         return float(loss.detach().item())
 
@@ -159,14 +175,13 @@ class Trainer:
         accumulator: MetricAccumulator | None = None,
     ) -> tuple[float, dict[str, float]]:
         self.model.train()
-        total, count = 0.0, 0
+        total, steps = 0.0, 0
         pbar = tqdm(loader, desc="train", leave=False, unit="batch")
-        for images, labels in pbar:
+        for steps, (images, labels) in enumerate(pbar, start=1):
             loss = self.training_step(images, labels, accumulator=accumulator)
             total += loss
-            count += 1
-            pbar.set_postfix(loss=f"{total / count:.4f}")
-        loss = total / max(count, 1)
+            pbar.set_postfix(loss=f"{total / steps:.4f}")
+        loss = total / max(steps, 1)
         metrics = accumulator.compute() if accumulator is not None else {}
         return loss, metrics
 
@@ -176,18 +191,15 @@ class Trainer:
         for images, labels in tqdm(loader, desc="eval", leave=False, unit="batch"):
             images, labels = self._to_device(images, labels)
             logits = self.model(images)
-            logits_np = {name: logits[name].cpu().numpy() for name in logits}
-            targets = {
-                name: labels[head_index(name)].cpu().numpy() for name in self.cfg.heads
-            }
-            accumulator.add_batch(logits_np, targets)
+            self._accumulate_batch(logits, labels, accumulator)
 
-    def _accumulator(self) -> MetricAccumulator:
+    def new_accumulator(self) -> MetricAccumulator:
+        """Create a fresh metric accumulator for this trainer's heads/metrics."""
         return MetricAccumulator(self.cfg.heads, self.metric_names, self.num_classes)
 
     @torch.no_grad()
     def evaluate(self, loader) -> dict[str, float]:
-        acc = self._accumulator()
+        acc = self.new_accumulator()
         self.evaluate_accumulate(loader, acc)
         return acc.compute()
 

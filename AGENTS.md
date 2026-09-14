@@ -4,7 +4,7 @@
 
 Real torchal package for surgical video phase classification (CholecT50): CLI, pydantic config schema, vendored dataset loader, and a full train/validate/test loop with MLflow tracking. No CI.
 
-Spec references: `docs/CONFIG.md` (every config field, type, default, allowed values, wired-vs-schema-only), `docs/METRICS.md` (metric semantics + MLflow naming).
+Spec references: `docs/CONFIG.md` (every config field, type, default, allowed values), `docs/METRICS.md` (metric semantics + MLflow naming).
 
 ## Toolchain
 
@@ -16,7 +16,6 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 
 - CLI: `uv run phase-cls <subcommand> <config.yaml>`. Subcommands: `validate-config`, `inspect`, `build-dataloaders`, `train` (`src/phase_classification/cli.py`).
 - Module: `uv run python -m phase_classification`.
-- `main.py` is leftover `uv init` boilerplate — ignore it; it is not the real entrypoint.
 
 ## Config system
 
@@ -34,14 +33,14 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 
 - `uv run phase-cls train configs/default.yaml` runs the whole lifecycle in one run (`src/phase_classification/run.py`): train → per-epoch validation → test on the held-out test split.
 - Model architecture is selected by `model.name` through the registry `models/registry.py` (`resnet18` → `models/resnet18.py` `ResNet18Classifier` with `pretrained`/`freeze_backbone` params; `convnext-ms-tcn`/`ms-tcn` → `ConvNeXtMSTCN` = ConvNeXt frame encoder + MS-TCN temporal head; `swin-ms-tcn` → `SwinMSTCN` = Swin frame encoder + MS-TCN temporal head; both require `dataset.sequence_length >= 2`, trained with `MSTCNLoss`); `model.params` carries architecture knobs.
-- Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (accuracy, accuracy_per_phase, f1_macro/f1_micro, jaccard, edit_score).
+- Engine `src/phase_classification/engine.py`: optimizer (`sgd`/`adam`/`adamw`), scheduler (`none`/`step`/`cosine`/`plateau`, stepped once per epoch), fp16 AMP, grad clipping. Losses in `losses.py` (CE for single-label heads, BCE for multi-label, focal); metrics in `metrics.py` (jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score).
+- Head label-space facts are centralized in `src/phase_classification/heads.py` (head order, `head_index`, single-label heads, default `num_classes`); losses/metrics/CLI/config all import from there.
 - MLflow logging per run:
   - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
   - Per-epoch metrics logged at `step=epoch`: `train_loss` + `train_*` + `val_*` (train/val compute the same metric set as test).
   - Test metrics logged at the end (`test_*`).
   - Best model (by primary val metric) saved via `mlflow.pytorch.log_model` and to `outputs/checkpoints/best.pt`.
   - Run status is set explicitly: `FINISHED` on success, `FAILED` on exception (`run.py:_end_mlflow_run`).
-- `validation.batch_size` is not wired yet — setting it raises `RunError`.
 
 ## MLflow stack (docker)
 
@@ -52,12 +51,13 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 
 ## Spec track / what's been done
 
-- **Model registry** (`models/registry.py` → `models/resnet18.py`, `models/ms_tcn.py`, `models/swin_classifier.py`): `resnet18` (`ResNet18Classifier`), `convnext-ms-tcn`/`ms-tcn` (`ConvNeXtMSTCN`), `swin-ms-tcn` (`SwinMSTCN`). `model.params` rejects unknown keys.
-- **Losses** (`losses.py`): CE for single-label heads (`phase`, `verb`), BCE for multi-label heads (`tool`, `target`, `triplet`), optional focal for single-label. `MSTCNLoss` (per-stage CE + truncated-MSE smoothing) for `ConvNeXtMSTCN`.
-- **Metrics** (`metrics.py`): accuracy, accuracy_per_phase, f1_macro, f1_micro, jaccard, edit_score (Levenshtein-based); accumulated per head across each split.
+- **Model registry** (`models/registry.py` → `models/resnet18.py`, `models/ms_tcn.py`, `models/swin_classifier.py`): `resnet18` (`ResNet18Classifier`), `convnext-ms-tcn`/`ms-tcn` (`ConvNeXtMSTCN`), `swin-ms-tcn` (`SwinMSTCN`), `swin-cls`/`swin-classifier` (`SwinClassifier`). `model.params` rejects unknown keys (spec-driven, one helper).
+- **Losses** (`losses.py`): CE for single-label heads (`phase`, `verb`), BCE for multi-label heads (`tool`, `target`, `triplet`), optional focal for single-label. `MSTCNLoss` (per-stage CE/BCE + truncated-MSE smoothing) for the MS-TCN models.
+- **Metrics** (`metrics.py`): jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score; accumulated per head across each split. Test `edit_score` = mean over per-video sequences (`MetricAccumulator.merged`); Levenshtein via `rapidfuzz`.
 - **Training loop** (`engine.py` + `run.py`): per-epoch train (with live train metrics) + validation, final test, MLflow params/tags/metrics/model, explicit `FINISHED`/`FAILED` run status.
-- **DataLoader** worker seeding is module-level (`data/dataloaders.py:_seed_worker`) so `num_workers>0` works on Linux forkserver.
-- **Dependency**: `mlflow` added via `uv add` (`pyproject.toml`/`uv.lock`).
+- **DataLoader** worker seeding is module-level (`data/dataloaders.py:_seed_worker`) so `num_workers>0` works on Linux forkserver. `DataLoaders.test` is the list of per-video datasets; `build_test_loaders()` wraps them with the same config knobs.
+- **Dependency**: `mlflow` and `rapidfuzz` added via `uv add` (`pyproject.toml`/`uv.lock`).
+- **Tests**: `tests/` covers config schema, loader, CLI, losses, metrics (hand-computed values + Levenshtein reference DP), registry, engine smoke tests, and run.py helpers; run with `uv run pytest` (if the console script is missing, `uv sync --reinstall-package pytest`).
 - Docs: `docs/CONFIG.md`, `docs/METRICS.md` (specs kept in sync with code).
 
 ## opencode.json

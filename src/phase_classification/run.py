@@ -17,15 +17,16 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
 
 import mlflow
 from phase_classification.config import ExperimentConfig
 from phase_classification.data.dataloaders import (
     DatasetUnavailableError,
     build_dataloaders,
+    build_test_loaders,
 )
 from phase_classification.engine import Trainer, resolve_device
+from phase_classification.metrics import MetricAccumulator
 from phase_classification.models import build_model
 
 
@@ -81,23 +82,6 @@ def _set_s3_env(mlflow_cfg) -> None:
             os.environ.setdefault(env_name, value)
 
 
-def _test_loaders(dl, dataloader_cfg) -> list[DataLoader]:
-    """Per-video dataloaders for the CholecT50 test split (a list of datasets)."""
-    datasets = dl.test.dataset
-    loaders = []
-    for ds in datasets:
-        loaders.append(
-            DataLoader(
-                ds,
-                batch_size=dataloader_cfg.batch_size,
-                shuffle=False,
-                num_workers=dataloader_cfg.num_workers,
-                pin_memory=dataloader_cfg.pin_memory,
-            )
-        )
-    return loaders
-
-
 def _epoch_metrics(trainer: Trainer, loader, prefix: str) -> dict[str, float]:
     metrics = trainer.evaluate(loader)
     return {f"{prefix}_{k}": v for k, v in metrics.items()}
@@ -114,18 +98,101 @@ def _end_mlflow_run(status: str) -> None:
 
 def run_training(cfg: ExperimentConfig) -> dict[str, float]:
     """Execute the full training/validation/test lifecycle, logging to MLflow."""
-    if cfg.validation.batch_size:
-        raise RunError("validation.batch_size is not wired to the training loop yet.")
-    loader_cfg = cfg.dataloader
     _start_mlflow(cfg)
     try:
-        return _run_lifecycle(cfg, loader_cfg)
+        return _run_lifecycle(cfg)
     except Exception:
         _end_mlflow_run("FAILED")
         raise
 
 
-def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
+def _clone_state_dict(model) -> dict:
+    """Detached CPU copy of the model's state dict (for checkpointing)."""
+    return {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+
+def _class_weights(
+    cfg: ExperimentConfig, dl, device: torch.device
+) -> dict[str, torch.Tensor] | None:
+    """Inverse-frequency class weights when ``class_weighting == 'inverse'``."""
+    if cfg.training.class_weighting != "inverse":
+        return None
+    from phase_classification.losses import compute_class_weights
+
+    print("Computing inverse-frequency class weights from the train split...")
+    # Use the underlying dataset (label JSONs only) instead of the loader
+    # to avoid decoding every image just for a histogram.
+    class_weights = compute_class_weights(
+        dl.train.dataset, cfg.training.heads, cfg.model.num_classes
+    )
+    class_weights = {h: w.to(device) for h, w in class_weights.items()}
+    for head, w in class_weights.items():
+        print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
+    return class_weights
+
+
+def _train_epochs(
+    trainer: Trainer,
+    model,
+    dl,
+    cfg: ExperimentConfig,
+    higher_better: bool,
+    metric_names: list[str],
+):
+    """Train and validate each epoch; return the best-val state dict (or None).
+
+    ``None`` means no validation metric was ever recorded (e.g. zero epochs
+    or an empty metric list); the caller then falls back to the final model.
+    """
+    best_metric = float("-inf") if higher_better else float("inf")
+    best_state = None
+    primary_metric = (
+        f"val_{cfg.training.heads[0]}_{metric_names[0]}" if metric_names else None
+    )
+
+    try:
+        for epoch in range(1, cfg.training.epochs + 1):
+            train_accumulator = trainer.new_accumulator()
+            train_loss, train_metrics = trainer.train_epoch(
+                dl.train, accumulator=train_accumulator
+            )
+            train_metrics = {f"train_{k}": v for k, v in train_metrics.items()}
+            val_metrics = _epoch_metrics(trainer, dl.val, prefix="val")
+            mlflow.log_metrics(
+                {"train_loss": train_loss, **train_metrics, **val_metrics},
+                step=epoch,
+            )
+            value = val_metrics.get(primary_metric) if primary_metric else None
+            if value is not None and _is_better(value, best_metric, higher_better):
+                best_metric = value
+                best_state = _clone_state_dict(model)
+            scheduler_metric = (
+                value if cfg.training.scheduler == "plateau" and value is not None else None
+            )
+            trainer.step_scheduler(scheduler_metric)
+            print(
+                f"epoch {epoch}/{cfg.training.epochs} "
+                f"train_loss={train_loss:.4f} "
+                + " ".join(f"{k}={v:.4f}" for k, v in val_metrics.items())
+            )
+    except KeyboardInterrupt:
+        print("Training interrupted; finishing with the best checkpoint.")
+    return best_state
+
+
+def _evaluate_test(trainer: Trainer, dl, cfg: ExperimentConfig) -> dict[str, float]:
+    """Evaluate each held-out test video; pool CM metrics, average edit score."""
+    accumulators = []
+    for test_loader in build_test_loaders(dl, cfg):
+        accumulator = trainer.new_accumulator()
+        trainer.evaluate_accumulate(test_loader, accumulator)
+        accumulators.append(accumulator)
+    if not accumulators:
+        return {}
+    return MetricAccumulator.merged(accumulators).compute()
+
+
+def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
     try:
         dl = build_dataloaders(cfg)
     except DatasetUnavailableError as exc:
@@ -136,21 +203,6 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
     metric_names = list(cfg.validation.metrics)
     higher_better = _higher_is_better(metric_names)
 
-    class_weights = None
-    if cfg.training.class_weighting == "inverse":
-        from phase_classification.losses import compute_class_weights
-
-        print("Computing inverse-frequency class weights from the train split...")
-        # Use the underlying dataset (label JSONs only) instead of the loader
-        # to avoid decoding every image just for a histogram.
-        train_dataset = dl.train.dataset
-        class_weights = compute_class_weights(
-            train_dataset, cfg.training.heads, cfg.model.num_classes
-        )
-        class_weights = {h: w.to(device) for h, w in class_weights.items()}
-        for head, w in class_weights.items():
-            print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
-
     trainer = Trainer(
         model,
         cfg.training,
@@ -159,56 +211,18 @@ def _run_lifecycle(cfg: ExperimentConfig, loader_cfg) -> dict[str, float]:
         num_classes=cfg.model.num_classes,
         mixed_precision=cfg.runtime.mixed_precision,
         higher_is_better=higher_better,
-        class_weights=class_weights,
+        class_weights=_class_weights(cfg, dl, device),
     )
 
-    best_metric = float("-inf") if higher_better else float("inf")
-    best_state = None
-    primary_metric = f"val_{cfg.training.heads[0]}_{metric_names[0]}" if metric_names else None
+    best_state = _train_epochs(trainer, model, dl, cfg, higher_better, metric_names)
 
-    try:
-        for epoch in range(1, cfg.training.epochs + 1):
-            train_accumulator = trainer._accumulator()
-            train_loss, train_metrics = trainer.train_epoch(
-                dl.train, accumulator=train_accumulator
-            )
-            train_metrics = {f"train_{k}": v for k, v in train_metrics.items()}
-            val_metrics = _epoch_metrics(trainer, dl.val, prefix="val")
-            mlflow.log_metrics(
-                {"train_loss": train_loss, **train_metrics, **val_metrics},
-                step=epoch,
-            )
-            if primary_metric is not None and val_metrics.get(primary_metric) is not None:
-                m = val_metrics[primary_metric]
-                if _is_better(m, best_metric, higher_better):
-                    best_metric = m
-                    best_state = {
-                        k: v.detach().cpu().clone() for k, v in model.state_dict().items()
-                    }
-            metric = None
-            if cfg.training.scheduler == "plateau" and primary_metric is not None:
-                metric = val_metrics.get(primary_metric)
-            trainer.step_scheduler(metric)
-            print(
-                f"epoch {epoch}/{cfg.training.epochs} "
-                f"train_loss={train_loss:.4f} "
-                + " ".join(f"{k}={v:.4f}" for k, v in val_metrics.items())
-            )
-    except KeyboardInterrupt:
-        print("Training interrupted; finishing with the best checkpoint.")
-
-    test_metrics: dict[str, float] = {}
-    accumulator = trainer._accumulator()
-    for test_loader in _test_loaders(dl, loader_cfg):
-        trainer.evaluate_accumulate(test_loader, accumulator)
-    for key, value in accumulator.compute().items():
-        test_metrics[f"test_{key}"] = value
+    test_metrics = {
+        f"test_{k}": v for k, v in _evaluate_test(trainer, dl, cfg).items()
+    }
     mlflow.log_metrics(test_metrics)
 
     if best_state is None:
-        best_state = {
-            k: v.detach().cpu().clone() for k, v in model.state_dict().items()
-        }
+        best_state = _clone_state_dict(model)
     if cfg.project.save_checkpoints:
         out_dir = Path(cfg.project.output_dir) / "checkpoints"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -243,7 +257,7 @@ def _is_better(value: float, best: float, higher_better: bool) -> bool:
     return value > best + 1e-9 if higher_better else value < best - 1e-9
 
 
-_HIGHER_BETTER = {
+_HIGHER_IS_BETTER_METRICS = {
     "jaccard",
     "f1_macro",
     "f1_per_class",
@@ -254,4 +268,6 @@ _HIGHER_BETTER = {
 
 
 def _higher_is_better(metric_names: list[str]) -> bool:
-    return bool(metric_names) and all(m in _HIGHER_BETTER for m in metric_names)
+    return bool(metric_names) and all(
+        m in _HIGHER_IS_BETTER_METRICS for m in metric_names
+    )

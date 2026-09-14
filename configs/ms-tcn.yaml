@@ -4,7 +4,6 @@
 
 project:
   name: phase-classification
-  seed: 42
   output_dir: outputs
   save_checkpoints: true
 
@@ -14,9 +13,7 @@ dataset:
   test_fold: 1
   sequence_length: 32
   augmentations: [original]
-  image_size: [256, 448]
   normalize: true
-  # video_ids: null   # optional explicit override
 
 dataloader:
   batch_size: 32
@@ -43,7 +40,6 @@ model:
 
 training:
   epochs: 20
-  batch_size: 32
   optimizer: adamw
   learning_rate: 0.001
   weight_decay: 0.0
@@ -58,9 +54,6 @@ training:
 
 validation:
   metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
-  checkpoint_path: null
-  top_k: 1
-  batch_size: null
 
 mlflow:
   tracking_uri: http://localhost:5000
@@ -78,4 +71,3 @@ runtime:
   cuda_device: 0
   mixed_precision: fp32
   seed: 42
-  num_workers: 4

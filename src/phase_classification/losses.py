@@ -10,21 +10,7 @@ over the heads selected in the training config.
 import torch
 from torch import nn
 
-HEAD_TUPLE_INDEX = {
-    "triplet": 0,
-    "tool": 1,
-    "verb": 2,
-    "target": 3,
-    "phase": 4,
-}
-
-# Heads where a frame normally has exactly one active class.
-SINGLE_LABEL_HEADS = ("phase", "verb")
-
-
-def head_index(name: str) -> int:
-    """Return the position of ``name`` in the loader's label tuple."""
-    return HEAD_TUPLE_INDEX[name]
+from phase_classification.heads import HEAD_TUPLE_INDEX, SINGLE_LABEL_HEADS
 
 
 def compute_class_weights(
@@ -39,32 +25,26 @@ def compute_class_weights(
     per-head class histograms, and returns ``head -> weight tensor (K,)``
     normalised to mean 1. Classes absent from the split get the maximum weight.
 
-    ``dataset`` must expose ``label_data``-style access; we accept either a
-    ``CholecT50``-like object with ``train_dataset`` of per-video datasets
-    (each having ``.label_data``), or an iterable of ``(images, labels)``
-    batches (slow path, kept for compatibility).
+    ``dataset`` must be a ``ConcatDataset``-like object whose ``.datasets`` are
+    per-video CholecT50 datasets exposing ``.label_data`` and
+    ``.get_binary_labels`` (i.e. the train split of the vendored loader).
     """
     counts = {h: torch.zeros(num_classes[h], dtype=torch.float64) for h in heads}
 
-    # Fast path: read label JSONs directly from per-video datasets.
     video_datasets = getattr(dataset, "datasets", None)
-    if video_datasets is not None and all(
+    if video_datasets is None or not all(
         hasattr(ds, "label_data") for ds in video_datasets
     ):
-        for ds in video_datasets:
-            for frame_labels in ds.label_data.values():
-                encoded = ds.get_binary_labels(frame_labels)
-                for h in heads:
-                    t = encoded[HEAD_TUPLE_INDEX[h]]
-                    counts[h] += torch.as_tensor(t, dtype=torch.float64)
-    else:  # slow fallback: iterate batches (decodes images)
-        for _, labels in dataset:
+        raise TypeError(
+            "compute_class_weights expects a split of per-video CholecT50 "
+            f"datasets with .label_data; got {type(dataset).__name__}."
+        )
+    for ds in video_datasets:
+        for frame_labels in ds.label_data.values():
+            encoded = ds.get_binary_labels(frame_labels)
             for h in heads:
-                t = labels[HEAD_TUPLE_INDEX[h]]
-                if t.ndim == 3:
-                    t = t.reshape(-1, t.shape[-1])
-                idx = t.argmax(dim=1)
-                counts[h] += torch.bincount(idx, minlength=num_classes[h]).double()
+                t = encoded[HEAD_TUPLE_INDEX[h]]
+                counts[h] += torch.as_tensor(t, dtype=torch.float64)
 
     weights: dict[str, torch.Tensor] = {}
     for h in heads:
@@ -87,6 +67,24 @@ def _head_target(label: torch.Tensor, device: torch.device) -> torch.Tensor:
     return t.to(device).float()
 
 
+def _build_losses(
+    heads: list[str], class_weights: dict[str, torch.Tensor] | None
+) -> tuple[
+    nn.CrossEntropyLoss,
+    nn.BCEWithLogitsLoss,
+    dict[str, nn.CrossEntropyLoss],
+    dict[str, nn.BCEWithLogitsLoss],
+]:
+    """Build the shared unweighted + per-head weighted CE/BCE losses."""
+    w = class_weights or {}
+    return (
+        nn.CrossEntropyLoss(),
+        nn.BCEWithLogitsLoss(),
+        {h: nn.CrossEntropyLoss(weight=w[h]) for h in heads if h in w},
+        {h: nn.BCEWithLogitsLoss(pos_weight=w[h]) for h in heads if h in w},
+    )
+
+
 class MultiHeadLoss(nn.Module):
     """Aggregate per-head classification losses for the configured heads.
 
@@ -103,27 +101,25 @@ class MultiHeadLoss(nn.Module):
         super().__init__()
         self.heads = list(heads)
         self.loss = loss
-        w = class_weights or {}
-        self._ce = nn.CrossEntropyLoss()
-        self._bce = nn.BCEWithLogitsLoss()
-        self._weighted_ce: dict[str, nn.CrossEntropyLoss] = {
-            h: nn.CrossEntropyLoss(weight=w[h]) for h in self.heads if h in w
-        }
-        self._weighted_bce: dict[str, nn.BCEWithLogitsLoss] = {
-            h: nn.BCEWithLogitsLoss(pos_weight=w[h]) for h in self.heads if h in w
-        }
+        self._ce, self._bce, self._weighted_ce, self._weighted_bce = _build_losses(
+            self.heads, class_weights
+        )
         if loss not in ("cross_entropy", "focal"):
             raise ValueError(
                 f"Unsupported loss '{loss}'. Choose from 'cross_entropy' or 'focal'."
             )
 
-    def _single(self, name: str, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def _single(
+        self, name: str, logits: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
         if self.loss == "focal":
             return self._focal(logits, targets)
         ce = self._weighted_ce.get(name, self._ce)
         return ce(logits, targets.argmax(dim=1))
 
-    def _multi(self, name: str, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def _multi(
+        self, name: str, logits: torch.Tensor, targets: torch.Tensor
+    ) -> torch.Tensor:
         bce = self._weighted_bce.get(name, self._bce)
         return bce(logits, targets)
 
@@ -179,18 +175,9 @@ class MSTCNLoss(nn.Module):
         self.model = model
         self.heads = list(heads)
         self.tau = tau
-        w = class_weights or {}
-        self._ce = nn.CrossEntropyLoss()
-        self._bce = nn.BCEWithLogitsLoss()
-        self._weighted_ce: dict[str, nn.CrossEntropyLoss] = {
-            h: nn.CrossEntropyLoss(weight=w[h]) for h in self.heads if h in w
-        }
-        self._weighted_bce: dict[str, nn.BCEWithLogitsLoss] = {
-            h: nn.BCEWithLogitsLoss(pos_weight=w[h]) for h in self.heads if h in w
-        }
-
-    def _sequence_target(self, label: torch.Tensor, device: torch.device) -> torch.Tensor:
-        return label.to(device).float()
+        self._ce, self._bce, self._weighted_ce, self._weighted_bce = _build_losses(
+            self.heads, class_weights
+        )
 
     def _smoothing(self, logits: torch.Tensor) -> torch.Tensor:
         prob = torch.softmax(logits, dim=1)  # (B, K, L)
@@ -208,7 +195,7 @@ class MSTCNLoss(nn.Module):
             stages = self.model.stage_logits.get(name)
             if not stages:
                 continue
-            target = self._sequence_target(labels[HEAD_TUPLE_INDEX[name]], device)
+            target = labels[HEAD_TUPLE_INDEX[name]].to(device).float()
             if target.ndim == 2:  # (B, K) single-frame batch -> (B, 1, K)
                 target = target.unsqueeze(1)
             head_loss = torch.zeros((), device=device)
@@ -222,7 +209,7 @@ class MSTCNLoss(nn.Module):
                     )
                 else:
                     bce = self._weighted_bce.get(name, self._bce)
-                    head_loss = head_loss + bce(stage_out, target)
+                    head_loss = head_loss + bce(stage_out.transpose(1, 2), target)
                 head_loss = head_loss + self._smoothing(stage_out)
             per_head[name] = head_loss
         total = sum(per_head.values()) if per_head else torch.zeros((), device=device)
