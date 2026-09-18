@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Extract SurgVLP/PeskaVLP frame embeddings and train a per-frame LSTM head.
+"""Extract SurgVLP/PeskaVLP frame embeddings, run zero-shot phase recognition,
+and optionally train a per-frame LSTM head.
 
 Usage:
     python surgvlp_lstm.py --dataset-dir /data/cholect50 [options]
@@ -10,18 +11,26 @@ Pipeline
     --weights) checkpoint, runs every frame of the chosen CholecT50 split
     through it, and caches {"features": [N, 768], "paths": [...]} on disk.
 
-    Stage 2 (LSTM): builds contiguous frame windows (--sequence-length) over
-    the cached features, trains a bidirectional LSTM classifier on the phase
-    head with class-balanced cross-entropy, and reports metrics computed with
-    ``phase_classification.metrics.MetricAccumulator`` (edit_score is the mean
-    over per-video test sequences).
+    Stage 2 (zero-shot, --zero-shot): classifies the test frames with the
+    pretrained text tower (Bio_ClinicalBERT) + the 7 class prompts, i.e. no
+    training at all. Requires ``transformers`` (pip install transformers) and
+    downloads Bio_ClinicalBERT on first use. Exits after evaluation.
+
+    Stage 3 (LSTM, default): builds contiguous frame windows
+    (--sequence-length) over the cached features, trains a bidirectional LSTM
+    classifier on the phase head with class-balanced cross-entropy, and reports
+    metrics computed with ``phase_classification.metrics.MetricAccumulator``
+    (edit_score is the mean over per-video test sequences).
 
 The model is the self-contained vision tower from CAMMA-public/SurgVLP
 (MedIA'25 / HecVL MICCAI'24 / PeskaVLP NeurIPS'24). Only the ``backbone_img.*``
-weights are used, so no mmengine/transformers dependency is required.
+weights are used for extraction, so the LSTM stage needs no mmengine/transformers
+dependency. The zero-shot stage additionally ports the ``backbone_text.*``
+(BertEncoder) tower.
 
 Example
     python surgvlp_lstm.py --dataset-dir /data/cholect50 --model peskavlp
+    python surgvlp_lstm.py --dataset-dir /data/cholect50 --zero-shot
     python surgvlp_lstm.py --dataset-dir /data/cholect50 \
         --embeddings-pt outputs/embeddings/peskavlp-2026-09-18/peskavlp_features.pt
 """
@@ -71,6 +80,28 @@ from phase_classification.metrics import MetricAccumulator
 
 EMBED_DIM = 768
 
+# CholecT50 phase names (index == phase class id), used for zero-shot output.
+PHASE_NAMES = [
+    "Preparation",
+    "CalotTriangleDissection",
+    "ClippingCutting",
+    "GallbladderDissection",
+    "GallbladderPackaging",
+    "CleaningCoagulation",
+    "GallbladderRetraction",
+]
+
+# One class prompt per phase, verbatim from CAMMA-public/SurgVLP tests/class_prompt.txt.
+CLASS_PROMPTS = [
+    "In preparation phase I insert trocars to patient abdomen cavity",
+    "In calot triangle dissection phase I use grasper to hold gallbladder and use hook to expose the hepatic triangle area and cystic duct and cystic artery",
+    "In clip and cut phase I use clipper to clip the cystic duct and artery then use scissor to cut them",
+    "In dissection phase I use the hook to dissect the connective tissue between gallbladder and liver",
+    "In packaging phase I put the gallbladder into the specimen bag",
+    "In clean and coagulation phase I use suction and irrigation to clear the surgical field and coagulate bleeding vessels",
+    "In retraction phase I grasp the specimen bag and remove it from trocar",
+]
+
 MODEL_DOWNLOADS = {
     "surgvlp": "https://seafile.unistra.fr/f/93757ace1bfc47248e1e/?dl=1",
     "hecvl": "https://seafile.unistra.fr/f/3b9b9207068a4b03bc2a/?dl=1",
@@ -100,6 +131,16 @@ def parse_args() -> argparse.Namespace:
         "--embeddings-pt", default=None, help="Reuse an existing features .pt (skips extraction)"
     )
     p.add_argument("--extract-only", action="store_true", help="Stop after embedding extraction")
+    p.add_argument(
+        "--zero-shot",
+        action="store_true",
+        help="Run zero-shot phase classification (pretrained text tower; needs transformers), then exit",
+    )
+    p.add_argument(
+        "--class-prompt",
+        default=None,
+        help="Path to a text file with one class prompt per line (default: embedded prompts)",
+    )
     p.add_argument("--sequence-length", type=int, default=16, help="LSTM window size")
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--epochs", type=int, default=10)
@@ -217,6 +258,280 @@ def surgvlp_preprocess() -> transforms.Compose:
     )
 
 
+# --- Stage 2: zero-shot evaluation (requires transformers) -------------------
+# Faithful port of the text tower from CAMMA-public/SurgVLP
+# (surgvlp/codes/models/backbones/text_backbones.py::BertEncoder), CC BY-NC-SA 4.0,
+# non-commercial research use. The official checkpoint's ``backbone_text.*``
+# keys load straight into this module.
+class SurgVLPTextEncoder(nn.Module):
+    """Bio_ClinicalBERT encoder with the SurgVLP token-sum aggregation."""
+
+    def __init__(
+        self,
+        bert_type: str = "emilyalsentzer/Bio_ClinicalBERT",
+        last_n_layers: int = 4,
+        aggregate_method: str = "sum",
+        norm: bool = False,
+        embedding_dim: int = EMBED_DIM,
+        freeze_bert: bool = False,
+        agg_tokens: bool = True,
+    ):
+        super().__init__()
+        from transformers import AutoModel, AutoTokenizer
+
+        self.bert_type = bert_type
+        self.last_n_layers = last_n_layers
+        self.aggregate_method = aggregate_method
+        self.norm = norm
+        self.embedding_dim = embedding_dim
+        self.freeze_bert = freeze_bert
+        self.agg_tokens = agg_tokens
+        self.model = AutoModel.from_pretrained(self.bert_type, output_hidden_states=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.bert_type)
+        self.idxtoword = {v: k for k, v in self.tokenizer.get_vocab().items()}
+        if self.freeze_bert:
+            for param in self.model.parameters():
+                param.requires_grad = False
+
+    def aggregate_tokens(self, embeddings, caption_ids):
+        _, num_layers, num_words, dim = embeddings.shape
+        embeddings = embeddings.permute(0, 2, 1, 3)
+        agg_embs_batch = []
+        sentences = []
+        for embs, caption_id in zip(embeddings, caption_ids):
+            agg_embs = []
+            token_bank = []
+            words = []
+            word_bank = []
+            for word_emb, word_id in zip(embs, caption_id):
+                word = self.idxtoword[word_id.item()]
+                if word == "[SEP]":
+                    new_emb = torch.stack(token_bank)
+                    new_emb = new_emb.sum(axis=0)
+                    agg_embs.append(new_emb)
+                    words.append("".join(word_bank))
+                    agg_embs.append(word_emb)
+                    words.append(word)
+                    break
+                if not word.startswith("##"):
+                    if len(word_bank) == 0:
+                        token_bank.append(word_emb)
+                        word_bank.append(word)
+                    else:
+                        new_emb = torch.stack(token_bank)
+                        new_emb = new_emb.sum(axis=0)
+                        agg_embs.append(new_emb)
+                        words.append("".join(word_bank))
+                        token_bank = [word_emb]
+                        word_bank = [word]
+                else:
+                    token_bank.append(word_emb)
+                    word_bank.append(word[2:])
+            agg_embs = torch.stack(agg_embs)
+            padding_size = num_words - len(agg_embs)
+            paddings = torch.zeros(padding_size, num_layers, dim)
+            paddings = paddings.to(agg_embs.device)
+            words = words + ["[PAD]"] * padding_size
+            agg_embs_batch.append(torch.cat([agg_embs, paddings]))
+            sentences.append(words)
+        agg_embs_batch = torch.stack(agg_embs_batch)
+        agg_embs_batch = agg_embs_batch.permute(0, 2, 1, 3)
+        return agg_embs_batch, sentences
+
+    def forward(self, ids=None, attn_mask=None, token_type=None, input_embedding=None):
+        if input_embedding is not None:
+            outputs = self.model(inputs_embeds=input_embedding, attention_mask=attn_mask)
+        else:
+            outputs = self.model(ids, attn_mask, token_type)
+        if self.last_n_layers > 1:
+            all_embeddings = outputs[2]
+            embeddings = torch.stack(all_embeddings[-self.last_n_layers :])
+            embeddings = embeddings.permute(1, 0, 2, 3)
+            if self.agg_tokens:
+                embeddings, sents = self.aggregate_tokens(embeddings, ids)
+            else:
+                sents = [[self.idxtoword[w.item()] for w in sent] for sent in ids]
+            sent_embeddings = embeddings.mean(axis=2)
+            if self.aggregate_method == "sum":
+                word_embeddings = embeddings.sum(axis=1)
+                sent_embeddings = sent_embeddings.sum(axis=1)
+            elif self.aggregate_method == "mean":
+                word_embeddings = embeddings.mean(axis=1)
+                sent_embeddings = sent_embeddings.mean(axis=1)
+            else:
+                raise RuntimeError(f"Aggregation method not implemented: {self.aggregate_method}")
+        else:
+            word_embeddings, sent_embeddings = outputs[0], outputs[1]
+            sents = None
+        batch_dim, num_words, feat_dim = word_embeddings.shape
+        word_embeddings = word_embeddings.view(batch_dim * num_words, feat_dim)
+        word_embeddings = word_embeddings.view(batch_dim, num_words, self.embedding_dim)
+        word_embeddings = word_embeddings.permute(0, 2, 1)
+        if self.norm:
+            word_embeddings = word_embeddings / torch.norm(
+                word_embeddings, 2, dim=1, keepdim=True
+            ).expand_as(word_embeddings)
+            sent_embeddings = sent_embeddings / torch.norm(
+                sent_embeddings, 2, dim=1, keepdim=True
+            ).expand_as(sent_embeddings)
+        return word_embeddings, sent_embeddings, sents
+
+
+def tokenize_surgvlp(texts: list[str], device: torch.device, max_length: int = 77) -> dict:
+    """Tokenize class prompts exactly like ``surgvlp.tokenize``."""
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained("emilyalsentzer/Bio_ClinicalBERT")
+    processed = [
+        tokenizer(
+            t, return_tensors="pt", truncation=True, padding="max_length", max_length=max_length
+        )
+        for t in texts
+    ]
+    caption_ids = torch.stack([x["input_ids"] for x in processed]).squeeze().to(device)
+    attention_mask = torch.stack([x["attention_mask"] for x in processed]).squeeze().to(device)
+    token_type_ids = torch.stack([x["token_type_ids"] for x in processed]).squeeze().to(device)
+    return {
+        "input_ids": caption_ids,
+        "attention_mask": attention_mask,
+        "token_type_ids": token_type_ids,
+    }
+
+
+def load_surgvlp_text(weights_path: str, device: torch.device) -> SurgVLPTextEncoder:
+    """Build the text tower and load the official ``backbone_text.*`` weights."""
+    text_encoder = SurgVLPTextEncoder().to(device)
+    state = torch.load(weights_path, map_location="cpu", weights_only=False)
+    if isinstance(state, dict) and isinstance(state.get("state_dict"), dict):
+        state = state["state_dict"]
+    prefixed = [k for k in state if k.startswith("backbone_text.")]
+    if not prefixed:
+        raise RuntimeError(f"No 'backbone_text.*' keys found in {weights_path}.")
+    state = {
+        k[len("backbone_text."):]: v
+        for k, v in state.items()
+        if k.startswith("backbone_text.")
+    }
+    missing, unexpected = text_encoder.load_state_dict(state, strict=False)
+    if missing:
+        raise RuntimeError(f"Missing keys loading SurgVLP text tower: {missing[:10]}")
+    if unexpected:
+        print(f"Ignored {len(unexpected)} unexpected text-tower keys.")
+    text_encoder.eval()
+    print(f"Loaded SurgVLP text tower from {weights_path} "
+          f"({sum(p.numel() for p in text_encoder.parameters()):,} params)")
+    return text_encoder
+
+
+def _read_prompts(path: str) -> list[str]:
+    with open(path) as f:
+        return [line.strip() for line in f if line.strip()]
+
+
+def _require_transformers() -> None:
+    """Raise a clear error when ``transformers`` (zero-shot dependency) is absent."""
+    try:
+        import transformers  # noqa: F401
+    except ImportError:
+        raise RuntimeError(
+            "--zero-shot requires the 'transformers' package: pip install transformers "
+            "(also downloads Bio_ClinicalBERT on first run)."
+        )
+
+
+def run_zero_shot(
+    features: torch.Tensor,
+    paths: list[str],
+    dataset_dir: str,
+    test_records: list[str],
+    weights_path: str,
+    device: torch.device,
+    class_prompts: list[str],
+    metrics: list[str],
+    output_dir: Path,
+) -> None:
+    """Zero-shot phase classification over the CholecT50 test split.
+
+    Uses the cached image embeddings (L2-normalised externally, like the
+    official ``zero_shot.py``) and the pretrained text tower on the class
+    prompts. Metrics are computed per video with ``MetricAccumulator`` and
+    merged (edit_score = mean over videos); the repo-style mean per-video
+    accuracy is printed as well.
+    """
+    heads = ["phase"]
+    num_classes = {h: DEFAULT_NUM_CLASSES[h] for h in heads}
+
+    text_encoder = load_surgvlp_text(weights_path, device)
+    with torch.no_grad():
+        tokens = tokenize_surgvlp(class_prompts, device)
+        _, text_feats, _ = text_encoder(
+            tokens["input_ids"], tokens["attention_mask"], tokens["token_type_ids"]
+        )
+    text_feats = text_feats / text_feats.norm(dim=-1, keepdim=True)
+    text_feats = text_feats.to(device)
+
+    lookup: dict[tuple[str, str], int] = {}
+    for idx, path in enumerate(paths):
+        p = Path(path)
+        lookup[(p.parent.name, p.stem)] = idx
+
+    per_video_acc = []
+    accumulators = []
+    for video in test_records:
+        label_file = os.path.join(dataset_dir, "labels", f"{video}.json")
+        label_data = _load_labels(label_file)
+        frame_keys = sorted(label_data, key=int)
+        probs, targets = [], []
+        correct = 0
+        for frame in frame_keys:
+            idx = lookup[(video, str(frame).zfill(6))]
+            emb = features[idx].to(device)
+            p = (100.0 * emb @ text_feats.T).softmax(dim=-1)
+            target = torch.tensor(_phase_onehot(label_data[frame])).bool().int()
+            probs.append(p.cpu())
+            targets.append(target)
+            if p.argmax().item() == target.argmax().item():
+                correct += 1
+        probs = torch.stack(probs)
+        targets = torch.stack(targets)
+        per_video_acc.append(correct / len(frame_keys))
+
+        acc = MetricAccumulator(heads, metrics, num_classes)
+        acc.add_batch(
+            {"phase": probs.numpy()},
+            {"phase": targets.numpy()},
+        )
+        accumulators.append(acc)
+
+    merged = MetricAccumulator.merged(accumulators).compute()
+    mean_video_acc = float(np.mean(per_video_acc))
+
+    print(f"\nZero-shot ({len(test_records)} test videos)")
+    print(f"Mean per-video accuracy: {mean_video_acc:.4f}")
+    for key, value in sorted(merged.items()):
+        print(f"  {key}: {value:.4f}")
+    if any(k.startswith(f"{heads[0]}_f1_class_") for k in merged):
+        print("Per-class F1:")
+        for i, name in enumerate(PHASE_NAMES):
+            key = f"{heads[0]}_f1_class_{i}"
+            if key in merged:
+                print(f"  {name}: {merged[key]:.4f}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with open(output_dir / "zero_shot_metrics.json", "w") as f:
+        json.dump(
+            {
+                "test_records": test_records,
+                "class_prompts": class_prompts,
+                "mean_video_accuracy": mean_video_acc,
+                "metrics": {k: float(v) for k, v in merged.items()},
+            },
+            f,
+            indent=2,
+        )
+    print("Saved zero-shot metrics:", output_dir / "zero_shot_metrics.json")
+
+
 @torch.no_grad()
 def extract_embeddings(
     video_datasets: list[Dataset],
@@ -250,6 +565,16 @@ def extract_embeddings(
 def _load_labels(label_file: str) -> dict:
     with open(label_file, "rb") as f:
         return json.load(f)["annotations"]
+
+
+def _phase_onehot(label_rows: list) -> np.ndarray:
+    """7-class phase one-hot vector from the raw 15-column label rows."""
+    phase_label = np.zeros([7])
+    for label in label_rows:
+        phase = label[14:15]
+        if phase[0] != -1.0:
+            phase_label[phase[0]] += 1
+    return phase_label
 
 
 class CholecT50Feature:
@@ -545,6 +870,15 @@ def main() -> None:
     num_classes = {h: DEFAULT_NUM_CLASSES[h] for h in heads}
 
     # --- Stage 1: embeddings ------------------------------------------------
+    split = CholecT50(
+        dataset_dir=args.dataset_dir,
+        dataset_variant=args.variant,
+        test_fold=args.test_fold,
+        augmentation_list=["original"],
+        normalize=True,
+        sequence_length=1,
+    )
+
     if args.embeddings_pt:
         data = torch.load(args.embeddings_pt, map_location="cpu", weights_only=False)
         features, paths = data["features"], list(data["paths"])
@@ -554,14 +888,6 @@ def main() -> None:
         encoder = load_surgvlp(weights_path, device)
         preprocess = surgvlp_preprocess()
 
-        split = CholecT50(
-            dataset_dir=args.dataset_dir,
-            dataset_variant=args.variant,
-            test_fold=args.test_fold,
-            augmentation_list=["original"],
-            normalize=True,
-            sequence_length=1,
-        )
         video_datasets = (
             list(split.train_dataset.datasets)
             + list(split.val_dataset.datasets)
@@ -601,15 +927,25 @@ def main() -> None:
     if features.shape[-1] != EMBED_DIM:
         print(f"Note: embedding dim is {features.shape[-1]} (SurgVLP default is {EMBED_DIM}).")
 
-    # --- Stage 2: LSTM over the cached features -----------------------------
-    split = CholecT50(
-        dataset_dir=args.dataset_dir,
-        dataset_variant=args.variant,
-        test_fold=args.test_fold,
-        augmentation_list=["original"],
-        normalize=True,
-        sequence_length=1,
-    )
+    # --- Stage 2: zero-shot evaluation (optional, exits) --------------------
+    if args.zero_shot:
+        _require_transformers()
+        weights_path = args.weights or download_weights(args.model, args.download_root)
+        prompts = _read_prompts(args.class_prompt) if args.class_prompt else list(CLASS_PROMPTS)
+        run_zero_shot(
+            features,
+            paths,
+            args.dataset_dir,
+            split.test_records,
+            weights_path,
+            device,
+            prompts,
+            metrics,
+            Path(args.output_dir),
+        )
+        return
+
+    # --- Stage 3: LSTM over the cached features -----------------------------
     feat_ds = CholecT50Feature(
         dataset_dir=args.dataset_dir,
         features=features,
