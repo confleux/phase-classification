@@ -87,25 +87,37 @@ Implementation (`metrics.py:_edit_score`, `MetricAccumulator.merged`):
 
 ### Naming
 
-Each metric is reported **per head** and prefixed by the split:
+Each metric is reported **per head** and prefixed by the split. Losses follow the
+same convention: the aggregated total loss is `<split>_loss` and each head's
+contribution is `<split>_<head>_loss`.
 
 ```
 <split>_<head>_<metric>
 
 train_loss                          # training loss (epoch mean)
+train_<head>_loss                   # per-head training loss (epoch mean)
 train_<head>_jaccard                # e.g. train_phase_jaccard
 val_<head>_f1_macro                 # e.g. val_phase_f1_macro
+val_loss                            # validation loss (mean over batches)
+test_<head>_loss                    # per-head test loss (mean over test videos)
 val_<head>_f1_class_0               # per-class F1 for class 0 of that head
 test_<head>_accuracy_class_1        # per-class accuracy for class 1
 ```
 
+Losses are the mean-per-batch scalars from the configured loss module
+(`total` plus one entry per head in `training.heads`); `LossAccumulator`
+(`metrics.py`) reduces them over all batches of the split, and for the test
+split over all per-video loaders. This matches how `train_loss` is computed.
+
 For the default single-head phase model (7 phases), full examples of keys you'll
 see in MLflow:
 
-- `train_loss`
+- `train_loss`, `train_phase_loss`
 - `train_phase_{jaccard,f1_macro,mean_accuracy,edit_score}`
 - `train_phase_f1_class_0..6`, `train_phase_accuracy_class_0..6`
+- `val_loss`, `val_phase_loss`
 - `val_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` + per-class variants
+- `test_loss`, `test_phase_loss`
 - `test_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` + per-class variants
 
 ### Where each split is logged (from `src/phase_classification/run.py`)
@@ -115,7 +127,9 @@ see in MLflow:
 | `train_*` | computed during each training epoch (argmax from the live training forward pass) | `step = epoch` |
 | `val_*` | evaluated once per epoch on the validation split | `step = epoch` |
 | `test_*` | evaluated once after training on the held-out test split (per-video accumulators merged: pooled CM metrics, mean per-video `edit_score`) | end of run |
-| `train_loss` | mean of the aggregated per-head loss over the training epoch | `step = epoch` |
+| `train_loss`, `train_<head>_loss` | mean of the per-head/total losses over the training epoch | `step = epoch` |
+| `val_loss`, `val_<head>_loss` | same losses computed on the validation split (no gradient) | `step = epoch` |
+| `test_loss`, `test_<head>_loss` | same losses computed on the test split (no gradient) | end of run |
 
 A single epoch therefore logs: `train_loss`, all `train_*`, and all `val_*`
 metrics at that epoch's step; `test_*` metrics are logged once at run end.
@@ -130,7 +144,8 @@ validation:
   metrics: [jaccard, f1_macro, f1_per_class, mean_accuracy, accuracy_per_class, edit_score]
 ```
 
-Produced MLflow metrics (per epoch): `train_loss`,
+Produced MLflow metrics (per epoch): `train_loss`, `train_phase_loss`,
 `train_phase_{jaccard,f1_macro,mean_accuracy,edit_score}` plus
 `train_phase_f1_class_<i>` and `train_phase_accuracy_class_<i>` for each class,
-and the `val_phase_*` equivalents; `test_phase_*` variants at run end.
+and the `val_phase_*` equivalents plus `val_loss`/`val_phase_loss`;
+`test_*` variants (including `test_loss`/`test_phase_loss`) at run end.

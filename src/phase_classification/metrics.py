@@ -20,7 +20,48 @@ from collections import defaultdict
 from collections.abc import Callable
 
 import numpy as np
+import torch
 from rapidfuzz.distance import Levenshtein
+
+
+class LossAccumulator:
+    """Accumulate per-head (and total) losses and reduce to their means.
+
+    Loss modules (``losses.py``) return ``head -> mean-per-batch scalar`` plus a
+    ``total`` entry. Each contribution is a batch mean, so the reduced value is
+    the mean over all contributed batches — the same reduction used for
+    ``train_loss`` in the engine. Use :meth:`merged` to combine per-sequence
+    (per-test-video) accumulators.
+    """
+
+    def __init__(self, heads: list[str]):
+        self.heads = list(heads)
+        self._sum: dict[str, float] = defaultdict(float)
+        self._count: dict[str, int] = defaultdict(int)
+
+    def add(self, losses: dict[str, torch.Tensor]) -> None:
+        for key, value in losses.items():
+            self._sum[key] += float(value.detach())
+            self._count[key] += 1
+
+    @classmethod
+    def merged(cls, accumulators: list[LossAccumulator]) -> LossAccumulator:
+        """Combine per-sequence accumulators (sums and counts add)."""
+        first = accumulators[0]
+        out = cls(first.heads)
+        for acc in accumulators:
+            for key, value in acc._sum.items():
+                out._sum[key] += value
+                out._count[key] += acc._count[key]
+        return out
+
+    def compute(self) -> dict[str, float]:
+        """Mean loss per accumulated key; keys with no contribution are omitted."""
+        return {
+            key: self._sum[key] / self._count[key]
+            for key in (*self.heads, "total")
+            if self._count[key] > 0
+        }
 
 
 class MetricAccumulator:

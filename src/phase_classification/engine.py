@@ -15,7 +15,7 @@ from tqdm import tqdm
 from phase_classification.config.training import TrainingConfig
 from phase_classification.heads import head_index
 from phase_classification.losses import MSTCNLoss, MultiHeadLoss
-from phase_classification.metrics import MetricAccumulator
+from phase_classification.metrics import LossAccumulator, MetricAccumulator
 
 
 def resolve_device(name: str, cuda_device: int | None = None) -> torch.device:
@@ -143,6 +143,7 @@ class Trainer:
         images,
         labels,
         accumulator: MetricAccumulator | None = None,
+        loss_accumulator: LossAccumulator | None = None,
     ) -> float:
         images, labels = self._to_device(images, labels)
         self.optimizer.zero_grad(set_to_none=True)
@@ -150,6 +151,8 @@ class Trainer:
         if accumulator is not None:
             self._accumulate_batch(logits, labels, accumulator)
         losses = self.loss_fn(logits, labels)
+        if loss_accumulator is not None:
+            loss_accumulator.add(losses)
         loss = losses["total"]
         if self.scaler is not None:
             self.scaler.scale(loss).backward()
@@ -173,12 +176,18 @@ class Trainer:
         self,
         loader,
         accumulator: MetricAccumulator | None = None,
+        loss_accumulator: LossAccumulator | None = None,
     ) -> tuple[float, dict[str, float]]:
         self.model.train()
         total, steps = 0.0, 0
         pbar = tqdm(loader, desc="train", leave=False, unit="batch")
         for steps, (images, labels) in enumerate(pbar, start=1):
-            loss = self.training_step(images, labels, accumulator=accumulator)
+            loss = self.training_step(
+                images,
+                labels,
+                accumulator=accumulator,
+                loss_accumulator=loss_accumulator,
+            )
             total += loss
             pbar.set_postfix(loss=f"{total / steps:.4f}")
         loss = total / max(steps, 1)
@@ -186,16 +195,27 @@ class Trainer:
         return loss, metrics
 
     @torch.no_grad()
-    def evaluate_accumulate(self, loader, accumulator: MetricAccumulator) -> None:
+    def evaluate_accumulate(
+        self,
+        loader,
+        accumulator: MetricAccumulator,
+        loss_accumulator: LossAccumulator | None = None,
+    ) -> None:
         self.model.eval()
         for images, labels in tqdm(loader, desc="eval", leave=False, unit="batch"):
             images, labels = self._to_device(images, labels)
             logits = self.model(images)
             self._accumulate_batch(logits, labels, accumulator)
+            if loss_accumulator is not None:
+                loss_accumulator.add(self.loss_fn(logits, labels))
 
     def new_accumulator(self) -> MetricAccumulator:
         """Create a fresh metric accumulator for this trainer's heads/metrics."""
         return MetricAccumulator(self.cfg.heads, self.metric_names, self.num_classes)
+
+    def new_loss_accumulator(self) -> LossAccumulator:
+        """Create a fresh loss accumulator for this trainer's heads."""
+        return LossAccumulator(self.cfg.heads)
 
     @torch.no_grad()
     def evaluate(self, loader) -> dict[str, float]:

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import torch
 
 from phase_classification.metrics import (
+    LossAccumulator,
     MetricAccumulator,
     _confusion_matrix,
     _edit_score,
@@ -121,6 +123,36 @@ class TestMetricAccumulator:
         )
         with pytest.raises(ValueError, match="Unknown metric"):
             acc.compute()
+
+
+class TestLossAccumulator:
+    def test_compute_means_over_batches(self):
+        acc = LossAccumulator(["phase"])
+        acc.add({"phase": torch.tensor(2.0), "total": torch.tensor(3.0)})
+        acc.add({"phase": torch.tensor(4.0), "total": torch.tensor(5.0)})
+        out = acc.compute()
+        assert out["phase"] == pytest.approx(3.0)
+        assert out["total"] == pytest.approx(4.0)
+
+    def test_skips_absent_heads(self):
+        acc = LossAccumulator(["phase", "tool"])
+        acc.add({"phase": torch.tensor(1.0), "total": torch.tensor(1.0)})
+        out = acc.compute()
+        assert set(out) == {"phase", "total"}
+
+    def test_empty(self):
+        assert LossAccumulator(["phase"]).compute() == {}
+
+    def test_merged_sums_then_means(self):
+        a = LossAccumulator(["phase"])
+        a.add({"phase": torch.tensor(1.0), "total": torch.tensor(1.0)})
+        b = LossAccumulator(["phase"])
+        b.add({"phase": torch.tensor(3.0), "total": torch.tensor(3.0)})
+        b.add({"phase": torch.tensor(5.0), "total": torch.tensor(5.0)})
+        merged = LossAccumulator.merged([a, b])
+        out = merged.compute()
+        assert out["phase"] == pytest.approx(3.0)
+        assert out["total"] == pytest.approx(3.0)
 
 
 class TestMergedAccumulator:

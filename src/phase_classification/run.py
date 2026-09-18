@@ -26,7 +26,7 @@ from phase_classification.data.dataloaders import (
     build_test_loaders,
 )
 from phase_classification.engine import Trainer, resolve_device
-from phase_classification.metrics import MetricAccumulator
+from phase_classification.metrics import LossAccumulator, MetricAccumulator
 from phase_classification.models import build_model
 
 
@@ -82,9 +82,26 @@ def _set_s3_env(mlflow_cfg) -> None:
             os.environ.setdefault(env_name, value)
 
 
+def _loss_key(name: str) -> str:
+    """MLflow metric name for a loss component: 'total' -> 'loss', else '<head>_loss'."""
+    return "loss" if name == "total" else f"{name}_loss"
+
+
+def _losses(accumulator: LossAccumulator, prefix: str) -> dict[str, float]:
+    return {
+        _loss_key(k) if not prefix else f"{prefix}_{_loss_key(k)}": v
+        for k, v in accumulator.compute().items()
+    }
+
+
 def _epoch_metrics(trainer: Trainer, loader, prefix: str) -> dict[str, float]:
-    metrics = trainer.evaluate(loader)
-    return {f"{prefix}_{k}": v for k, v in metrics.items()}
+    accumulator = trainer.new_accumulator()
+    loss_accumulator = trainer.new_loss_accumulator()
+    trainer.evaluate_accumulate(
+        loader, accumulator, loss_accumulator=loss_accumulator
+    )
+    metrics = {f"{prefix}_{k}": v for k, v in accumulator.compute().items()}
+    return {**_losses(loss_accumulator, prefix), **metrics}
 
 
 def _end_mlflow_run(status: str) -> None:
@@ -153,13 +170,22 @@ def _train_epochs(
     try:
         for epoch in range(1, cfg.training.epochs + 1):
             train_accumulator = trainer.new_accumulator()
+            train_loss_accumulator = trainer.new_loss_accumulator()
             train_loss, train_metrics = trainer.train_epoch(
-                dl.train, accumulator=train_accumulator
+                dl.train,
+                accumulator=train_accumulator,
+                loss_accumulator=train_loss_accumulator,
             )
+            train_losses = _losses(train_loss_accumulator, prefix="train")
             train_metrics = {f"train_{k}": v for k, v in train_metrics.items()}
             val_metrics = _epoch_metrics(trainer, dl.val, prefix="val")
             mlflow.log_metrics(
-                {"train_loss": train_loss, **train_metrics, **val_metrics},
+                {
+                    "train_loss": train_loss,
+                    **train_losses,
+                    **train_metrics,
+                    **val_metrics,
+                },
                 step=epoch,
             )
             value = val_metrics.get(primary_metric) if primary_metric else None
@@ -183,13 +209,20 @@ def _train_epochs(
 def _evaluate_test(trainer: Trainer, dl, cfg: ExperimentConfig) -> dict[str, float]:
     """Evaluate each held-out test video; pool CM metrics, average edit score."""
     accumulators = []
+    loss_accumulators = []
     for test_loader in build_test_loaders(dl, cfg):
         accumulator = trainer.new_accumulator()
-        trainer.evaluate_accumulate(test_loader, accumulator)
+        loss_accumulator = trainer.new_loss_accumulator()
+        trainer.evaluate_accumulate(
+            test_loader, accumulator, loss_accumulator=loss_accumulator
+        )
         accumulators.append(accumulator)
+        loss_accumulators.append(loss_accumulator)
     if not accumulators:
         return {}
-    return MetricAccumulator.merged(accumulators).compute()
+    losses = _losses(LossAccumulator.merged(loss_accumulators), prefix="")
+    metrics = MetricAccumulator.merged(accumulators).compute()
+    return {**losses, **metrics}
 
 
 def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:

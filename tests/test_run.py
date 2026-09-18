@@ -11,10 +11,13 @@ from torch.utils.data import DataLoader, TensorDataset
 from phase_classification.config import ExperimentConfig
 from phase_classification.config.mlflow import MLflowConfig
 from phase_classification.data.dataloaders import DataLoaders, build_test_loaders
+from phase_classification.metrics import LossAccumulator
 from phase_classification.run import (
     _git_commit_hash,
     _higher_is_better,
     _is_better,
+    _loss_key,
+    _losses,
     _set_s3_env,
 )
 
@@ -85,3 +88,15 @@ def test_build_test_loaders_wraps_each_video_dataset():
     loaders = build_test_loaders(dl, cfg)
     assert len(loaders) == 2
     assert all(loader.batch_size == 2 for loader in loaders)
+
+
+def test_loss_key_mapping():
+    assert _loss_key("total") == "loss"
+    assert _loss_key("phase") == "phase_loss"
+
+
+def test_losses_prefixing():
+    acc = LossAccumulator(["phase"])
+    acc.add({"phase": torch.tensor(2.0), "total": torch.tensor(3.0)})
+    assert _losses(acc, "train") == {"train_loss": 3.0, "train_phase_loss": 2.0}
+    assert _losses(acc, "") == {"loss": 3.0, "phase_loss": 2.0}

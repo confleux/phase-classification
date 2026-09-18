@@ -37,8 +37,8 @@ Spec references: `docs/CONFIG.md` (every config field, type, default, allowed va
 - Head label-space facts are centralized in `src/phase_classification/heads.py` (head order, `head_index`, single-label heads, default `num_classes`); losses/metrics/CLI/config all import from there.
 - MLflow logging per run:
   - Config params via `cfg.to_mlflow_params()`; tag `gitcommithash` = current git HEAD (set in `run.py:_start_mlflow`).
-  - Per-epoch metrics logged at `step=epoch`: `train_loss` + `train_*` + `val_*` (train/val compute the same metric set as test).
-  - Test metrics logged at the end (`test_*`).
+  - Per-epoch metrics logged at `step=epoch`: `train_loss` + per-head `train_<head>_loss`, the `train_*` metric set, plus the same losses/metrics for `val_*` (train/val compute the same set as test).
+  - Test metrics logged at the end (`test_*`), including `test_loss`/`test_<head>_loss`.
   - Best model (by primary val metric) saved via `mlflow.pytorch.log_model` and to `outputs/checkpoints/best.pt`.
   - Run status is set explicitly: `FINISHED` on success, `FAILED` on exception (`run.py:_end_mlflow_run`).
 

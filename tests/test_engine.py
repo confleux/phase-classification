@@ -110,6 +110,26 @@ class TestTrainer:
         assert 0 <= metrics["phase_jaccard"] <= 1
         assert 0 <= metrics["phase_f1_macro"] <= 1
 
+    def test_train_epoch_accumulates_losses(self):
+        trainer = self._trainer()
+        loader = DataLoader(TinyPhaseDataset(), batch_size=2)
+        acc = trainer.new_accumulator()
+        loss_acc = trainer.new_loss_accumulator()
+        loss, _ = trainer.train_epoch(loader, accumulator=acc, loss_accumulator=loss_acc)
+        out = loss_acc.compute()
+        assert set(out) == {"phase", "total"}
+        assert out["total"] == pytest.approx(loss)
+
+    def test_evaluate_accumulate_losses(self):
+        trainer = self._trainer()
+        loader = DataLoader(TinyPhaseDataset(), batch_size=2)
+        acc = trainer.new_accumulator()
+        loss_acc = trainer.new_loss_accumulator()
+        trainer.evaluate_accumulate(loader, acc, loss_accumulator=loss_acc)
+        out = loss_acc.compute()
+        assert set(out) == {"phase", "total"}
+        assert out["total"] > 0
+
     def test_scheduler_step(self):
         trainer = self._trainer(scheduler="step", step_size=1)
         lr0 = trainer.optimizer.param_groups[0]["lr"]
