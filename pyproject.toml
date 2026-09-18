@@ -25,6 +25,7 @@ phase-cls = "phase_classification.cli:main"
 
 [dependency-groups]
 dev = [
+    "opencv-python-headless>=5.0.0.93",
     "pytest",
     "ruff",
 ]
