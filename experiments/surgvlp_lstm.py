@@ -16,9 +16,9 @@ Pipeline
     training at all. Requires ``transformers`` (pip install transformers) and
     downloads Bio_ClinicalBERT on first use. Exits after evaluation.
 
-    Stage 3 (LSTM, default): builds contiguous frame windows
-    (--sequence-length) over the cached features, trains a bidirectional LSTM
-    classifier on the phase head with class-balanced cross-entropy, and reports
+    Stage 3 (PeskaVLP + BiLSTM + classification head, default): builds contiguous frame windows
+    (--sequence-length) over the cached PeskaVLP embeddings, trains a bidirectional LSTM with
+    a per-frame classification head on the phase class, trained with class-balanced cross-entropy, and reports
     metrics computed with ``phase_classification.metrics.MetricAccumulator``
     (edit_score is the mean over per-video test sequences).
 
@@ -738,9 +738,37 @@ class T50SequenceFeature(Dataset):
         return features, labels
 
 
-# --- LSTM model, sampler, training loop -------------------------------------
-class LstmModel(nn.Module):
-    def __init__(self, feat_dim, lstm_hidden, num_layers, bidirectional, num_classes, dropout=0.0):
+# --- Stage 3: PeskaVLP embeddings -> BiLSTM -> classification head ----------
+class ClassificationHead(nn.Module):
+    """Per-frame classification head over the BiLSTM outputs."""
+
+    def __init__(self, in_features: int, num_classes: int, dropout: float = 0.0):
+        super().__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.linear = nn.Linear(in_features, num_classes)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.linear(self.dropout(x))
+
+
+class PeskaVLPBiLSTM(nn.Module):
+    """Frozen PeskaVLP frame embeddings -> BiLSTM -> classification head.
+
+    The PeskaVLP vision tower (ResNet-50 + global projection to 768 dims)
+    is run once at extraction time (Stage 1) and cached; its weights are frozen.
+    This module consumes the cached per-frame embeddings [B, L, 768] and
+    emits per-frame logits [B, L,,num_classes].
+    """
+
+    def __init__(
+        self,
+        feat_dim: int,
+        lstm_hidden: int,
+        num_layers: int,
+        bidirectional: bool,
+        num_classes: int,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.lstm = nn.LSTM(
             feat_dim,
@@ -750,12 +778,15 @@ class LstmModel(nn.Module):
             bidirectional=bidirectional,
             dropout=dropout if num_layers > 1 else 0.0,
         )
-        self.dropout = nn.Dropout(dropout)
-        self.head = nn.Linear(lstm_hidden * (2 if bidirectional else 1), num_classes)
+        self.head = ClassificationHead(
+            in_features=lstm_hidden * (2 if bidirectional else 1),
+            num_classes=num_classes,
+            dropout=dropout,
+        )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         seq, _ = self.lstm(x)
-        return self.head(self.dropout(seq))
+        return self.head(seq)
 
 
 def collate_fn(batch):
@@ -958,7 +989,7 @@ def main() -> None:
     train_ds, val_ds, test_ds = feat_ds.build()
     print(f"train: {len(train_ds)} val: {len(val_ds)} test: {len(test_ds)}")
 
-    model = LstmModel(
+    model = PeskaVLPBiLSTM(
         feat_dim=features.shape[-1],
         lstm_hidden=args.hidden,
         num_layers=args.layers,
