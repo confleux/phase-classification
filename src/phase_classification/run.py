@@ -87,6 +87,13 @@ def _loss_key(name: str) -> str:
     return "loss" if name == "total" else f"{name}_loss"
 
 
+def _count_parameters(model) -> dict[str, int]:
+    """Total and trainable parameter counts for a torch module."""
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return {"total": total, "trainable": trainable}
+
+
 def _losses(accumulator: LossAccumulator, prefix: str) -> dict[str, float]:
     return {
         _loss_key(k) if not prefix else f"{prefix}_{_loss_key(k)}": v
@@ -233,6 +240,11 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
 
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
     model = build_model(cfg.model, heads=cfg.training.heads)
+    counts = _count_parameters(model)
+    print(
+        f"Model '{cfg.model.name}': {counts['total']:,} parameters "
+        f"({counts['trainable']:,} trainable)"
+    )
     metric_names = list(cfg.validation.metrics)
     higher_better = _higher_is_better(metric_names)
 

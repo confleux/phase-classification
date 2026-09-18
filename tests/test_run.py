@@ -6,6 +6,7 @@ import os
 import re
 
 import torch
+from conftest import StubClassifier
 from torch.utils.data import DataLoader, TensorDataset
 
 from phase_classification.config import ExperimentConfig
@@ -13,6 +14,7 @@ from phase_classification.config.mlflow import MLflowConfig
 from phase_classification.data.dataloaders import DataLoaders, build_test_loaders
 from phase_classification.metrics import LossAccumulator
 from phase_classification.run import (
+    _count_parameters,
     _git_commit_hash,
     _higher_is_better,
     _is_better,
@@ -100,3 +102,22 @@ def test_losses_prefixing():
     acc.add({"phase": torch.tensor(2.0), "total": torch.tensor(3.0)})
     assert _losses(acc, "train") == {"train_loss": 3.0, "train_phase_loss": 2.0}
     assert _losses(acc, "") == {"loss": 3.0, "phase_loss": 2.0}
+
+
+def test_count_parameters_counts_all_params():
+    model = StubClassifier(["phase"], {"phase": 7})
+    counts = _count_parameters(model)
+    assert counts["total"] == sum(p.numel() for p in model.parameters())
+    assert counts["trainable"] == counts["total"]
+    assert counts["total"] > 0
+
+
+def test_count_parameters_tracks_frozen_backbone():
+    model = StubClassifier(["phase"], {"phase": 7})
+    for param in model.proj.parameters():
+        param.requires_grad_(False)
+    counts = _count_parameters(model)
+    assert counts["total"] > counts["trainable"]
+    assert counts["trainable"] == sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
