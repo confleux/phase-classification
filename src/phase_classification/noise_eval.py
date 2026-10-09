@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -106,16 +107,30 @@ class GaussianNoiseDataset(Dataset):
             return [index + offset for offset in range(count)]
 
 
-def _checkpoint_state(path: Path, device: torch.device) -> dict[str, Any]:
+def _checkpoint_state(
+    path: Path, device: torch.device, trusted: bool = False
+) -> dict[str, Any]:
     if not path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
-    checkpoint = torch.load(path, map_location=device, weights_only=True)
-    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
-        checkpoint = checkpoint["state_dict"]
-    elif isinstance(checkpoint, dict) and "model" in checkpoint:
-        checkpoint = checkpoint["model"]
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=not trusted)
+    except pickle.UnpicklingError as exc:
+        raise ValueError(
+            f"Could not safely load checkpoint {path}. If this is a checkpoint "
+            "you created or otherwise trust, rerun with --trusted-checkpoint."
+        ) from exc
+
+    if isinstance(checkpoint, dict):
+        for key in ("state_dict", "model_state_dict", "model"):
+            if key in checkpoint:
+                checkpoint = checkpoint[key]
+                break
+    if isinstance(checkpoint, torch.nn.Module):
+        checkpoint = checkpoint.state_dict()
     if not isinstance(checkpoint, dict):
-        raise TypeError(f"Checkpoint {path} does not contain a model state dict.")
+        raise TypeError(
+            f"Checkpoint {path} does not contain a model state dict or full model."
+        )
     return checkpoint
 
 
@@ -170,6 +185,7 @@ def evaluate_noise_robustness(
     cfg: ExperimentConfig,
     checkpoint_path: Path,
     noise_stds: list[float],
+    trusted_checkpoint: bool = False,
 ) -> dict[str, dict[str, float]]:
     """Load a trained model and score clean/noisy held-out test videos."""
     if any(std < 0 for std in noise_stds):
@@ -179,7 +195,9 @@ def evaluate_noise_robustness(
     dl = build_dataloaders(cfg)
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
     model = build_model(cfg.model, heads=cfg.training.heads).to(device)
-    model.load_state_dict(_checkpoint_state(checkpoint_path, device))
+    model.load_state_dict(
+        _checkpoint_state(checkpoint_path, device, trusted=trusted_checkpoint)
+    )
     model.eval()
 
     results = {
@@ -215,10 +233,23 @@ def main(argv: list[str] | None = None) -> None:
         help="RGB-space Gaussian noise stds in [0,1] pixel units (default: 0.05 0.10 0.20).",
     )
     parser.add_argument("--output", type=Path, help="Optional path to save the JSON scores.")
+    parser.add_argument(
+        "--trusted-checkpoint",
+        action="store_true",
+        help=(
+            "Allow loading a pickled full model. Use only for files you trust; "
+            "unpickling can execute arbitrary code."
+        ),
+    )
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
-    results = evaluate_noise_robustness(cfg, args.checkpoint, args.noise_stds)
+    results = evaluate_noise_robustness(
+        cfg,
+        args.checkpoint,
+        args.noise_stds,
+        trusted_checkpoint=args.trusted_checkpoint,
+    )
     report = json.dumps(results, indent=2, sort_keys=True)
     print(report)
     if args.output:
