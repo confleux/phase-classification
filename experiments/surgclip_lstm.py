@@ -10,9 +10,9 @@ SurgCLIP from aperezr20/SurgLaVi, MedIA'26):
     Stage 1 (embeddings): loads SurgCLIP-beta through the official `surgclip`
     package (TimeSformer-B vision tower over 16-frame clips, dual BERT text
     tower), runs one --num-frames clip per annotated frame of the chosen
-    CholecT50 split through ``encode_vision`` + ``vision_proj`` (L2-normalised,
-    i.e. the CLIP similarity space used by ``SurgCLIP.get_sim``), and caches
-    {"features": [N, D], "paths": [...]} on disk. Weights auto-download from
+    CholecT50 split through ``encode_vision`` and caches the anchor frame's
+    projected, L2-normalised CLIP-space embedding as
+    {"features": [N, D], "paths": [...]}. Weights auto-download from
     HuggingFace (aleperez24/SurgCLIP) on first use and are cached in
     ~/.cache/surgclip (override the location with $SURGCLIP_CACHE).
 
@@ -294,8 +294,13 @@ class ClipWindowReader:
         while self._buffer and self._buffer[0][0] < start:
             self._buffer.popleft()
 
-    def window(self, anchor: int) -> torch.Tensor:
-        """Return the (num_frames, C, H, W) clip for the anchor frame."""
+    def window(self, anchor: int) -> tuple[torch.Tensor, int]:
+        """Return the anchor's (num_frames, C, H, W) clip and its slot index.
+
+        The slot is the anchor frame's position inside the (possibly padded)
+        window — the per-frame pooled output of the vision tower is indexed
+        with it after the forward pass.
+        """
         start = _window_start(anchor, self.total, self.num_frames, self.clip_mode)
         end = min(start + self.num_frames, self.total)
         self._extend_to(end - 1)
@@ -303,18 +308,34 @@ class ClipWindowReader:
         frames = [t for i, t in self._buffer if start <= i < end]
         while len(frames) < self.num_frames:  # pad short videos (repeat last frame)
             frames.append(frames[-1])
-        return torch.stack(frames, dim=0)
+        return torch.stack(frames, dim=0), anchor - start
 
 
 def _encode_clip_batch(
-    model: nn.Module, clips: torch.Tensor, device: torch.device, autocast: bool
+    model: nn.Module,
+    clips: torch.Tensor,
+    slots: torch.Tensor,
+    device: torch.device,
+    autocast: bool,
 ) -> torch.Tensor:
-    """CLIP-space embeddings for a (B, T, C, H, W) batch of clips."""
+    """CLIP-space embedding of each clip's anchor frame.
+
+    ``encode_vision`` returns per-frame pooled CLS embeddings (B, T, C) when
+    temporal modeling is enabled (the real TimeSformer), or a single pooled
+    vector (B, C) otherwise. ``slots`` indexes the anchor frame's position in
+    the (B, T, C) case. The returned embedding is
+    ``F.normalize(vision_proj(pooled))`` — the quantity ``SurgCLIP.get_sim``
+    scores text against.
+    """
     clips = clips.to(device)
     with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=autocast):
-        _, pooled = model.encode_vision(clips)  # (B, vision_width)
-        proj = model.vision_proj(pooled)  # (B, embed_dim)
-    return F.normalize(proj.float(), dim=-1)
+        _, pooled = model.encode_vision(clips)
+        proj = model.vision_proj(pooled)  # (B, T, E) or (B, E)
+    proj = F.normalize(proj.float(), dim=-1)
+    if proj.dim() == 3:  # (B, T, E): keep the anchor frame's slot
+        idx = slots.to(proj.device)
+        return proj[torch.arange(len(idx), device=proj.device), idx]
+    return proj  # (B, E): already one embedding per clip
 
 
 @torch.no_grad()
@@ -332,8 +353,9 @@ def extract_surgclip_embeddings(
 
     For each anchor frame the window is selected exactly like the official
     ``VideoPreprocessor`` (centered/online, clamped at video boundaries, short
-    videos padded), and the cached feature is the L2-normalised projected
-    embedding — the same quantity ``SurgCLIP.get_sim`` scores text against.
+    videos padded). The vision tower yields per-frame pooled embeddings for the
+    whole clip; the cached feature is the anchor frame's slot — projected and
+    L2-normalised, the quantity ``SurgCLIP.get_sim`` scores text against.
     """
     model.eval()
     autocast_on = amp and device.type == "cuda"
@@ -347,17 +369,26 @@ def extract_surgclip_embeddings(
         reader = ClipWindowReader(img_paths, preprocess, num_frames, clip_mode)
         video_name = Path(ds.img_dir).name
         clips: list[torch.Tensor] = []
+        slots: list[int] = []
         clip_paths: list[str] = []
         for anchor in tqdm(range(len(img_paths)), desc=video_name, leave=False, unit="frame"):
-            clips.append(reader.window(anchor))
+            clip, slot = reader.window(anchor)
+            clips.append(clip)
+            slots.append(slot)
             clip_paths.append(img_paths[anchor])
             if len(clips) == batch_size:
-                emb = _encode_clip_batch(model, torch.stack(clips), device, autocast_on)
+                emb = _encode_clip_batch(
+                    model, torch.stack(clips),
+                    torch.tensor(slots, dtype=torch.long), device, autocast_on,
+                )
                 features.append(emb.detach().cpu())
                 paths.extend(clip_paths)
-                clips, clip_paths = [], []
+                clips, slots, clip_paths = [], [], []
         if clips:
-            emb = _encode_clip_batch(model, torch.stack(clips), device, autocast_on)
+            emb = _encode_clip_batch(
+                model, torch.stack(clips),
+                torch.tensor(slots, dtype=torch.long), device, autocast_on,
+            )
             features.append(emb.detach().cpu())
             paths.extend(clip_paths)
     return torch.cat(features, dim=0), paths

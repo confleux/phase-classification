@@ -1,4 +1,4 @@
-"""Dataset configuration, CholecT50-aware.
+"""Dataset configuration for CholecT50 and HeiChole.
 
 The enum values mirror the reference CholecT50_dataloader.py (CAMMA Rendezvous):
 dataset variants, augmentations, and test folds. Frames are resized to the
@@ -13,7 +13,7 @@ from pydantic import Field
 
 from phase_classification.config.base import StrictModel
 
-CHOLEC50_VARIANTS = Literal[
+DATASET_VARIANTS = Literal[
     "cholect45-crossval",
     "cholect50-crossval",
     "cholect50-challenge",
@@ -21,6 +21,7 @@ CHOLEC50_VARIANTS = Literal[
     "cholect45",
     "cholect50-subset",
     "cholect50-small",
+    "heichole",
 ]
 
 DataAugmentation = Literal[
@@ -41,7 +42,7 @@ class DatasetConfig(StrictModel):
     fold, matching the reference loader.
     """
 
-    dataset_variant: CHOLEC50_VARIANTS = "cholect50-crossval"
+    dataset_variant: DATASET_VARIANTS = "cholect50-crossval"
     root_dir: Path
     test_fold: int = Field(default=1, ge=1, le=5)
     sequence_length: int = Field(default=1, ge=1)

@@ -66,19 +66,45 @@ The config has 8 top-level sections. All are optional except `dataset`.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `dataset_variant` | str | `cholect50-crossval` | `cholect45-crossval`, `cholect50-crossval`, `cholect50-challenge`, `cholect50`, `cholect45`, `cholect50-subset`, `cholect50-small` |
-| `root_dir` | Path | — (**required**) | dir containing `videos/` and `labels/`, e.g. `/data/cholect50` |
-| `test_fold` | int | `1` | `1..5` (only meaningful for `*-crossval`) |
-| `sequence_length` | int | `1` | `1` = single frame (`T50`); `>=2` = temporal windows (`T50Sequence`) |
+| `dataset_variant` | str | `cholect50-crossval` | `cholect45-crossval`, `cholect50-crossval`, `cholect50-challenge`, `cholect50`, `cholect45`, `cholect50-subset`, `cholect50-small`, `heichole` |
+| `root_dir` | Path | — (**required**) | dataset root; expected subdirectories and files depend on the variant (see below) |
+| `test_fold` | int | `1` | `1..5`; official CholecT50 fold, or HeiChole's deterministic local five-fold split |
+| `sequence_length` | int | `1` | `1` = single frame; `>=2` = contiguous video-frame windows |
 | `augmentations` | list[str] | `["original"]` | `original`, `vflip`, `hflip`, `contrast`, `rot90`, `brightness`, `random_contrast` |
 | `normalize` | bool | `true` | ImageNet normalization |
 
 Frames are resized to the loader's fixed **256x448** (`image_size` is not
-configurable).
+configurable). Video decoding for HeiChole requires `opencv-python-headless` to
+be installed in the runtime environment.
 
-`dataset_variant` must start with `cholect`, otherwise `DatasetRegistryError`.
-Crossval variants map `test_fold` to the held-out fold; non-crossval variants use
-the built-in train/val/test split from the loader.
+`cholect*` variants use the vendored CholecT50 loader and its existing data
+layout. `heichole` uses this local layout (the challenge's data page describes
+the videos and annotations, but does not prescribe extracted archive filenames):
+
+```text
+<root_dir>/
+  videos/<case-id>.mp4
+  labels/<case-id>_Phase.csv
+```
+
+HeiChole accepts OpenCV-supported video extensions and also accepts
+`labels/<case-id>.csv`. For this adapter, CSVs must have `Frame,Phase` columns,
+zero-based frame indices, and phase IDs `0..6`. The challenge documents this
+column format for phase results, but does not prescribe the downloaded training
+archive's file layout; rename or convert annotations if needed. The loader
+assigns matched cases to deterministic five folds: `test_fold` is held out, the
+next fold is used for validation, and the other three folds are used for
+training. This is a local split, not an official HeiChole
+train/validation/test partition. The current adapter supervises the seven-class
+`phase` head only; use `training.heads: [phase]` (the default). Action,
+instrument, and skill annotations are not currently loaded.
+
+The HeiChole challenge describes at least 30 laparoscopic cholecystectomy
+videos from three hospitals, with framewise phase labels and optional
+action/instrument/skill labels. Its public training data was released through
+[Synapse](https://www.synapse.org/#!Synapse:syn18824884/wiki/592586); the
+challenge's test set is not publicly released. The official phase CSV format
+is documented on the [submission page](https://www.synapse.org/#!Synapse:syn18824884/wiki/592587).
 
 ---
 
@@ -286,6 +312,17 @@ Only `dataset` is required; everything else defaults:
 dataset:
   dataset_variant: cholect50-small
   root_dir: /data/cholect50
+```
+
+## Example: HeiChole phase recognition
+
+```yaml
+dataset:
+  dataset_variant: heichole
+  root_dir: /data/heichole
+  test_fold: 1
+training:
+  heads: [phase]
 ```
 
 ## Example: phase classification (matches `configs/default.yaml`)
