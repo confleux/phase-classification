@@ -3,14 +3,16 @@
 Run with::
 
     uv run python -m phase_classification.surgclip_diffusion \\
-        --dataset-dir /data/cholect50 --test-fold 1
+        --dataset-dir /data/cholect50 --test-fold 1 \\
+        --scores-cache outputs/cache/surgclip-fold1.pt \\
+        --embeddings-file outputs/surgclip-diffusion/fold1/surgclip_embeddings.pt
 
 The SurgCLIP video/text encoders stay frozen. A temporal denoiser is trained
-on the training videos' phase-label sequences, conditioned on SurgCLIP's
-per-frame phase scores. The validation split selects the best refiner; the
-test split is evaluated once for both raw and refined scores. An optional
-    score cache avoids rerunning the SurgCLIP encoder when changing refiner
-    settings. Pooled projected video embeddings are saved separately for reuse.
+on phase-label residuals, conditioned on the per-frame SurgCLIP scores and
+saved visual embeddings. The original scores are skip-connected to the final
+prediction, so diffusion predicts a correction rather than regenerating labels
+from noise. The validation split selects the best refiner; the test split is
+evaluated once for both raw and refined scores.
 """
 
 from __future__ import annotations
@@ -290,14 +292,16 @@ class _TemporalResidualBlock(nn.Module):
 
 
 class ConditionalTemporalDiffusion(nn.Module):
-    """Gaussian diffusion denoiser for phase sequences conditioned on scores."""
+    """Diffuse residual corrections conditioned on SurgCLIP scores/features."""
 
     def __init__(
         self,
+        condition_dim: int,
         num_classes: int = NUM_CLASSES,
         width: int = 96,
         layers: int = 6,
         diffusion_steps: int = 1000,
+        correction_scale: float = 1.0,
     ):
         super().__init__()
         if diffusion_steps < 2:
@@ -305,11 +309,12 @@ class ConditionalTemporalDiffusion(nn.Module):
         time_width = width * 2
         self.num_classes = num_classes
         self.diffusion_steps = diffusion_steps
+        self.correction_scale = correction_scale
         self.time_mlp = nn.Sequential(
             nn.Linear(time_width, time_width), nn.SiLU(),
             nn.Linear(time_width, time_width),
         )
-        self.input_projection = nn.Conv1d(num_classes * 2, width, 1)
+        self.input_projection = nn.Conv1d(num_classes + condition_dim, width, 1)
         self.blocks = nn.ModuleList(
             _TemporalResidualBlock(width, 2 ** (i % 5), time_width)
             for i in range(layers)
@@ -341,19 +346,37 @@ class ConditionalTemporalDiffusion(nn.Module):
         labels: torch.Tensor,
         condition: torch.Tensor,
         valid_mask: torch.Tensor,
+        auxiliary_ce_weight: float = 1.0,
     ) -> torch.Tensor:
         batch_size = labels.shape[0]
+        baseline_probs = condition[..., : self.num_classes]
         timesteps = torch.randint(
             self.diffusion_steps, (batch_size,), device=labels.device
         )
-        clean = F.one_hot(labels, self.num_classes).float()
+        clean_labels = F.one_hot(labels, self.num_classes).float()
+        clean = clean_labels - baseline_probs
         noise = torch.randn_like(clean)
         alpha_bar = self.alpha_bars[timesteps].view(batch_size, 1, 1)
         noisy = alpha_bar.sqrt() * clean + (1.0 - alpha_bar).sqrt() * noise
         predicted_noise = self(noisy, condition, timesteps)
+        predicted_residual = (
+            noisy - (1.0 - alpha_bar).sqrt() * predicted_noise
+        ) / alpha_bar.sqrt()
         mask = valid_mask.unsqueeze(-1).float()
         squared_error = (predicted_noise - noise).square() * mask
-        return squared_error.sum() / (mask.sum() * self.num_classes).clamp(min=1.0)
+        diffusion_loss = squared_error.sum() / (
+            mask.sum() * self.num_classes
+        ).clamp(min=1.0)
+        corrected_logits = baseline_probs.clamp(min=1e-6).log() + (
+            self.correction_scale * predicted_residual.clamp(-1.0, 1.0)
+        )
+        cross_entropy = F.cross_entropy(
+            corrected_logits.transpose(1, 2), labels, reduction="none"
+        )
+        auxiliary_loss = (cross_entropy * valid_mask.float()).sum() / valid_mask.sum().clamp(
+            min=1
+        )
+        return diffusion_loss + auxiliary_ce_weight * auxiliary_loss
 
     @torch.inference_mode()
     def sample_probabilities(
@@ -363,7 +386,7 @@ class ConditionalTemporalDiffusion(nn.Module):
         num_samples: int = 1,
         seed: int = 0,
     ) -> torch.Tensor:
-        """Use deterministic DDIM steps; average probabilities over samples."""
+        """DDIM-sample score residuals and apply their mean as a correction."""
         if not 1 <= sample_steps <= self.diffusion_steps:
             raise ValueError("sample_steps must be in [1, diffusion_steps]")
         if num_samples < 1:
@@ -379,7 +402,8 @@ class ConditionalTemporalDiffusion(nn.Module):
             sample_steps,
             device=condition.device,
         ).round().long().unique_consecutive()
-        probabilities = []
+        baseline_probs = condition[..., : self.num_classes].clamp(min=1e-6)
+        residual_samples = []
         for _ in range(num_samples):
             x = torch.randn(
                 batch_size,
@@ -403,10 +427,12 @@ class ConditionalTemporalDiffusion(nn.Module):
                     x = alpha_previous.sqrt() * x0 + (1.0 - alpha_previous).sqrt() * epsilon
                 else:
                     x = x0
-            probabilities.append(x0.softmax(dim=-1))
+            residual_samples.append(x0.clamp(-1.0, 1.0))
         if was_training:
             self.train()
-        return torch.stack(probabilities).mean(dim=0)
+        residual = torch.stack(residual_samples).mean(dim=0)
+        corrected_logits = baseline_probs.log() + self.correction_scale * residual
+        return corrected_logits.softmax(dim=-1)
 
 
 def _make_training_batch(
@@ -415,7 +441,8 @@ def _make_training_batch(
     crop_length: int,
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    conditions = torch.zeros(batch_size, crop_length, NUM_CLASSES)
+    embedding_dim = videos[0].embeddings.shape[-1]
+    conditions = torch.zeros(batch_size, crop_length, NUM_CLASSES + embedding_dim)
     labels = torch.zeros(batch_size, crop_length, dtype=torch.long)
     mask = torch.zeros(batch_size, crop_length, dtype=torch.bool)
     for i in range(batch_size):
@@ -424,7 +451,9 @@ def _make_training_batch(
         start = int(np.random.randint(max(length - crop_length + 1, 1)))
         stop = min(start + crop_length, length)
         actual_length = stop - start
-        condition = video.scores[start:stop].softmax(dim=-1)
+        score_condition = video.scores[start:stop].softmax(dim=-1)
+        embedding_condition = F.normalize(video.embeddings[start:stop], dim=-1)
+        condition = torch.cat((score_condition, embedding_condition), dim=-1)
         target = video.targets[start:stop]
         conditions[i, :actual_length] = condition
         labels[i, :actual_length] = target
@@ -452,7 +481,10 @@ def _evaluate(
     for video_index, video in enumerate(
         tqdm(videos, desc="evaluate", leave=False, unit="video")
     ):
-        condition = video.scores.softmax(dim=-1).unsqueeze(0).to(device)
+        score_condition = video.scores.softmax(dim=-1)
+        embedding_condition = F.normalize(video.embeddings, dim=-1)
+        condition = torch.cat((score_condition, embedding_condition), dim=-1)
+        condition = condition.unsqueeze(0).to(device)
         if refiner is None:
             logits = video.scores.numpy()
         else:
@@ -495,9 +527,11 @@ def _fit_refiner(
     if not train_videos or not val_videos:
         raise ValueError("Both training and validation splits must contain videos.")
     model = ConditionalTemporalDiffusion(
+        condition_dim=NUM_CLASSES + train_videos[0].embeddings.shape[-1],
         width=args.width,
         layers=args.layers,
         diffusion_steps=args.diffusion_steps,
+        correction_scale=args.correction_scale,
     ).to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=args.weight_decay
@@ -515,7 +549,12 @@ def _fit_refiner(
             condition, targets, mask = _make_training_batch(
                 train_videos, args.batch_size, args.crop_length, device
             )
-            loss = model.training_loss(targets, condition, mask)
+            loss = model.training_loss(
+                targets,
+                condition,
+                mask,
+                auxiliary_ce_weight=args.auxiliary_ce_weight,
+            )
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -576,6 +615,41 @@ def _deserialize_scores(data: dict[str, list[dict[str, Any]]]) -> dict[str, list
     }
 
 
+def _attach_saved_embeddings(
+    splits: dict[str, list[VideoScores]],
+    embeddings_path: Path,
+    expected_metadata: dict[str, Any],
+) -> None:
+    """Load the separately saved embeddings and align them by split/video."""
+    artifact = torch.load(embeddings_path, map_location="cpu", weights_only=False)
+    if artifact.get("metadata") != expected_metadata:
+        raise ValueError(
+            "Embedding artifact metadata does not match this run's dataset, "
+            "fold, model, or clip settings."
+        )
+    saved_splits = artifact.get("splits", {})
+    if set(saved_splits) != set(splits):
+        raise ValueError("Embedding artifact is missing one or more dataset splits.")
+    for split_name, videos in splits.items():
+        by_video = {
+            str(item["video_id"]): item for item in saved_splits[split_name]
+        }
+        if set(by_video) != {video.video_id for video in videos}:
+            raise ValueError(f"Embedding artifact video IDs differ in {split_name}.")
+        for video in videos:
+            item = by_video[video.video_id]
+            embedding = item["embeddings"].float()
+            target = item["targets"].long()
+            if len(embedding) != len(video.targets) or not torch.equal(
+                target, video.targets
+            ):
+                raise ValueError(
+                    f"Saved embeddings/targets are misaligned for {video.video_id}."
+                )
+            video.embeddings = embedding
+    print(f"Loaded SurgCLIP embeddings from {embeddings_path}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", required=True, help="CholecT50 root with videos/ and labels/")
@@ -587,6 +661,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--extract-batch-size", type=int, default=2)
     parser.add_argument("--amp", action="store_true", help="Use fp16 for SurgCLIP extraction on CUDA")
     parser.add_argument("--scores-cache", default=None, help="Optional reusable SurgCLIP score cache")
+    parser.add_argument(
+        "--embeddings-file",
+        default=None,
+        help="Reuse a saved surgclip_embeddings.pt artifact",
+    )
     parser.add_argument("--output-dir", default="outputs/surgclip-diffusion")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--seed", type=int, default=42)
@@ -601,6 +680,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--test-samples", type=int, default=3)
     parser.add_argument("--learning-rate", type=float, default=2e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--correction-scale", type=float, default=1.0)
+    parser.add_argument("--auxiliary-ce-weight", type=float, default=1.0)
     return parser
 
 
@@ -614,6 +695,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("epochs, steps-per-epoch, and crop-length must be positive")
     if args.sample_steps > args.diffusion_steps:
         raise ValueError("sample-steps cannot exceed diffusion-steps")
+    if args.correction_scale < 0 or args.auxiliary_ce_weight < 0:
+        raise ValueError("correction-scale and auxiliary-ce-weight must be nonnegative")
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = resolve_device(args.device)
@@ -664,6 +747,11 @@ def main(argv: list[str] | None = None) -> None:
         if device.type == "cuda":
             torch.cuda.empty_cache()
 
+    if args.embeddings_file:
+        _attach_saved_embeddings(
+            splits, Path(args.embeddings_file), _cache_metadata(args)
+        )
+
     for name, videos in splits.items():
         print(f"{name}: {len(videos)} videos, {sum(len(v.targets) for v in videos)} frames")
     output_dir = Path(args.output_dir)
@@ -711,6 +799,8 @@ def main(argv: list[str] | None = None) -> None:
                 "width": args.width,
                 "layers": args.layers,
                 "diffusion_steps": args.diffusion_steps,
+                "condition_dim": NUM_CLASSES + splits["train"][0].embeddings.shape[-1],
+                "correction_scale": args.correction_scale,
             },
             "metadata": _cache_metadata(args),
         },
