@@ -249,7 +249,7 @@ def run_meta_surdiff(
         raise ValueError("Meta-SurDiff currently supports the seven-class phase head only.")
     if cfg.runtime.mixed_precision != "fp32":
         raise ValueError("Meta-SurDiff bilevel training currently requires fp32.")
-    feature_dim = int(data.feature_dim)
+    feature_dim = int(data.train.dataset.datasets[0].features.shape[-1])
     if feature_dim != int(params.get("feature_dim", 256)):
         raise ValueError("model.params.feature_dim must match the cached SurgCLIP features.")
 
