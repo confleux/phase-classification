@@ -21,6 +21,7 @@ import argparse
 import json
 import math
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -523,6 +524,8 @@ def _fit_refiner(
     val_videos: list[VideoScores],
     args: argparse.Namespace,
     device: torch.device,
+    on_epoch: Callable[[int, float, dict[str, float], dict[str, float]], None]
+    | None = None,
 ) -> tuple[ConditionalTemporalDiffusion, dict[str, float]]:
     if not train_videos or not val_videos:
         raise ValueError("Both training and validation splits must contain videos.")
@@ -571,6 +574,8 @@ def _fit_refiner(
             f"val_macro_f1={score:.4f} "
             f"val_mean_video_f1={video_average['mean_video_macro_f1']:.4f}"
         )
+        if on_epoch is not None:
+            on_epoch(epoch, float(np.mean(losses)), validation, video_average)
         if score > best_score:
             best_score = score
             best_validation = {**validation, **video_average}
