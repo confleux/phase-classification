@@ -1,5 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "permissions": [
+    { "action": "edit", "resource": "configs/**", "effect": "allow" }
+  ],
   "mcp": {
     "servers": {
       "mlflow": {

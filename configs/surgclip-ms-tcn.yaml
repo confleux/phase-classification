@@ -1,0 +1,53 @@
+# SurgCLIP frozen-feature temporal probing on CholecT50.
+# Run from the repository root with: uv run phase-cls train configs/surgclip-ms-tcn.yaml
+
+project:
+  name: surgclip-ms-tcn
+  output_dir: outputs/surgclip-ms-tcn/fold1
+  save_checkpoints: true
+
+dataset:
+  dataset_variant: cholect50-crossval
+  root_dir: /home/vscode/dataset/CholecT50
+  feature_cache: outputs/surgclip-diffusion/fold1/surgclip_embeddings.pt
+  test_fold: 1
+
+dataloader:
+  batch_size: 1
+  num_workers: 0
+  shuffle: true
+  pin_memory: false
+  persistent_workers: false
+
+model:
+  name: surgclip-ms-tcn
+  params:
+    feature_dim: 256
+    num_stages: 3
+    num_layers: 8
+    num_f_maps: 64
+    kernel_size: 3
+  num_classes:
+    phase: 7
+
+training:
+  heads: [phase]
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.01
+  weight_decay: 0.01
+  scheduler: cosine
+  class_weighting: none
+
+validation:
+  metrics: [f1_macro, jaccard, mean_accuracy, edit_score]
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: SurgCLIP CholecT50 probes
+  run_name: surgclip-ms-tcn-fold1
+
+runtime:
+  device: cuda
+  mixed_precision: fp32
+  seed: 42
