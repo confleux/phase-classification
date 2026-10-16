@@ -196,14 +196,22 @@ def _class_weights(
 
 
 def _validate_feature_probe(cfg: ExperimentConfig, dl) -> None:
-    feature_model = cfg.model.name in {"surgclip-ms-tcn", "feature-ms-tcn"}
+    model_name = cfg.model.name
+    feature_model = model_name in {
+        "surgclip-ms-tcn",
+        "feature-ms-tcn",
+        "surgclip-meta-surdiff",
+    }
     feature_cache = cfg.dataset.feature_cache
     if feature_cache is None:
         if feature_model:
-            raise RunError("surgclip-ms-tcn requires dataset.feature_cache.")
+            raise RunError(f"{model_name} requires dataset.feature_cache.")
         return
     if not feature_model:
-        raise RunError("dataset.feature_cache requires model.name: surgclip-ms-tcn.")
+        raise RunError(
+            "dataset.feature_cache requires model.name: surgclip-ms-tcn "
+            "or surgclip-meta-surdiff."
+        )
     if cfg.training.heads != ["phase"]:
         raise RunError("Cached SurgCLIP probing currently supports only the phase head.")
     if cfg.dataloader.batch_size != 1:
@@ -314,6 +322,13 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
 
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
     _validate_feature_probe(cfg, dl)
+    if cfg.model.name == "surgclip-meta-surdiff":
+        from phase_classification.meta_surdiff import run_meta_surdiff
+
+        test_metrics = run_meta_surdiff(cfg, dl, device)
+        _end_mlflow_run("FINISHED")
+        return test_metrics
+
     model = build_model(cfg.model, heads=cfg.training.heads)
     counts = _count_parameters(model)
     print(

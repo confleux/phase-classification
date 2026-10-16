@@ -78,12 +78,12 @@ Frames are resized to the loader's fixed **256x448** (`image_size` is not
 configurable) for image-based models. Video decoding for HeiChole requires
 `opencv-python-headless` to be installed in the runtime environment.
 
-When `feature_cache` is set, use the `surgclip-ms-tcn` model with
-`training.heads: [phase]` and `dataloader.batch_size: 1`. The cache can be the
-flat `features`/`paths` artifact or the per-video `splits` artifact produced by
-the SurgCLIP scripts. The loader checks video/frame alignment against CholecT50
-labels and batches one complete video at a time. The MS-TCN head trains on these
-frozen features; images and the SurgCLIP encoder are not loaded.
+When `feature_cache` is set, use `surgclip-ms-tcn` or `surgclip-meta-surdiff`
+with `training.heads: [phase]` and `dataloader.batch_size: 1`. The cache can be
+the flat `features`/`paths` artifact or the per-video `splits` artifact produced
+by the SurgCLIP scripts. The loader checks video/frame alignment against
+CholecT50 labels and batches one complete video at a time. Images and the
+SurgCLIP encoder are not loaded during these frozen-feature experiments.
 
 `cholect*` variants use the vendored CholecT50 loader and its existing data
 layout. `heichole` uses this local layout (the challenge's data page describes
@@ -163,8 +163,8 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `surgclip-ms-tcn` (alias `feature-ms-tcn`), `swin-cls` (alias `swin-classifier`) |
-| `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
+| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `surgclip-ms-tcn` (alias `feature-ms-tcn`), `surgclip-meta-surdiff`, `swin-cls` (alias `swin-classifier`) |
+| `params` | dict | `{}` | architecture-specific parameters; registry models reject unsupported keys |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
 Default `num_classes` (CholecT50 label space):
@@ -251,6 +251,36 @@ Input is one full video of cached features `(1, T, D)`. The model uses the
 project's shared `Trainer`, `MSTCNLoss`, `MetricAccumulator`, checkpointing, and
 MLflow run lifecycle. Only the `phase` head is currently supported for cached
 SurgCLIP probing.
+
+`surgclip-meta-surdiff` is a two-stage custom run mode in `run.py`. It first
+pretrains the cached-feature MS-TCN as a coarse phase predictor, then fine-tunes
+the predictor and a conditional label-diffusion model using the Meta-SurDiff
+meta-weight objective. Balanced meta crops are sampled from training videos
+only; validation selects the refined checkpoint and the test split is evaluated
+once. It shares the project config, dataset loader, MLflow run, and checkpoint
+conventions, but uses a specialized bilevel loop rather than the generic
+`Trainer` for the meta-learning stage.
+
+The main `model.params` settings are:
+
+| Param | Default | Notes |
+|---|---:|---|
+| `feature_dim` | `256` | Must match the SurgCLIP cache |
+| `num_stages` / `num_layers` / `num_f_maps` | `3` / `8` / `64` | Coarse MS-TCN architecture |
+| `diffusion_timesteps` | `100` | Linear noise schedule from `beta_start` to `beta_end` |
+| `diffusion_hidden_dim` | `512` | Conditional denoiser hidden width |
+| `meta_epochs` / `meta_steps_per_epoch` | `20` / `100` | Bilevel fine-tuning schedule |
+| `meta_learning_rate` | `0.001` | Meta-weight network AdamW learning rate |
+| `theta_learning_rate` | `0.00001` | MS-TCN + diffusion AdamW learning rate |
+| `inner_learning_rate` | `0.00001` | Differentiable virtual update in the meta objective |
+| `crop_length` | `256` | Training/meta sequence crop length |
+| `sampling_steps` | `100` | DDIM denoising steps at validation/test |
+
+See [`configs/surgclip-meta-surdiff.yaml`](../configs/surgclip-meta-surdiff.yaml)
+for a runnable example. This config is an **offline adaptation**: it uses the
+existing centered SurgCLIP cache and symmetric MS-TCN convolutions. Reproducing
+the paper's online setting would require causal SurgCLIP features and a causal
+coarse temporal network.
 
 `swin-cls` (Swin Transformer encoder + per-head classifier in
 `models/swin_classifier.py`; alias `swin-classifier`):
