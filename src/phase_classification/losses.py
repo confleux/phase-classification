@@ -175,16 +175,28 @@ class MSTCNLoss(nn.Module):
         self.model = model
         self.heads = list(heads)
         self.tau = tau
+        self.smoothing_on_log_probs = bool(
+            getattr(model, "smoothing_on_log_probs", False)
+        )
+        self.smoothing_weight = float(getattr(model, "smoothing_weight", 1.0))
         self._ce, self._bce, self._weighted_ce, self._weighted_bce = _build_losses(
             self.heads, class_weights
         )
 
     def _smoothing(self, logits: torch.Tensor) -> torch.Tensor:
-        prob = torch.softmax(logits, dim=1)  # (B, K, L)
-        if prob.shape[-1] <= 1:
-            return torch.zeros((), device=prob.device)
-        diff = (prob[:, :, 1:] - prob[:, :, :-1]) ** 2
-        return torch.clamp(diff, max=self.tau).mean()
+        values = (
+            torch.log_softmax(logits, dim=1)
+            if self.smoothing_on_log_probs
+            else torch.softmax(logits, dim=1)
+        )
+        if values.shape[-1] <= 1:
+            return torch.zeros((), device=values.device)
+        diff = (values[:, :, 1:] - values[:, :, :-1]).abs()
+        if self.smoothing_on_log_probs:
+            diff = diff.clamp(max=self.tau).square()
+        else:
+            diff = diff.square().clamp(max=self.tau)
+        return self.smoothing_weight * diff.mean()
 
     def forward(
         self, logits: dict[str, torch.Tensor], labels: tuple[torch.Tensor, ...]

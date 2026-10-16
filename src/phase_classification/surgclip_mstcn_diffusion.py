@@ -12,7 +12,10 @@ import mlflow
 from phase_classification.config import ExperimentConfig
 from phase_classification.engine import Trainer
 from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
-from phase_classification.models.ms_tcn import CachedFeatureMSTCN
+from phase_classification.models.ms_tcn import (
+    CachedFeatureMSTCN,
+    CachedFeatureMSTCNPlusPlus,
+)
 from phase_classification.run import (
     _class_weights,
     _clone_state_dict,
@@ -22,7 +25,11 @@ from phase_classification.run import (
 from phase_classification.surgclip_diffusion import VideoScores, _evaluate, _fit_refiner
 
 
-def _to_video_scores(model: CachedFeatureMSTCN, videos: list, device: torch.device):
+def _to_video_scores(
+    model: CachedFeatureMSTCN | CachedFeatureMSTCNPlusPlus,
+    videos: list,
+    device: torch.device,
+):
     model.eval()
     output = []
     with torch.inference_mode():
@@ -72,15 +79,29 @@ def run_surgclip_mstcn_diffusion(
     if feature_dim != int(params.get("feature_dim", 256)):
         raise ValueError("model.params.feature_dim must match the cached SurgCLIP features.")
 
-    coarse = CachedFeatureMSTCN(
-        feature_dim=feature_dim,
-        num_classes=cfg.model.num_classes,
-        heads=["phase"],
-        num_stages=int(params.get("num_stages", 3)),
-        num_layers=int(params.get("num_layers", 8)),
-        num_f_maps=int(params.get("num_f_maps", 64)),
-        kernel_size=int(params.get("kernel_size", 3)),
-    ).to(device)
+    if cfg.model.name == "surgclip-ms-tcnpp-diffusion":
+        coarse = CachedFeatureMSTCNPlusPlus(
+            feature_dim=feature_dim,
+            num_classes=cfg.model.num_classes,
+            heads=["phase"],
+            num_refinement_stages=int(params.get("num_refinement_stages", 3)),
+            generation_layers=int(params.get("generation_layers", 11)),
+            refinement_layers=int(params.get("refinement_layers", 10)),
+            num_f_maps=int(params.get("num_f_maps", 64)),
+            kernel_size=int(params.get("kernel_size", 3)),
+            dropout=float(params.get("dropout", 0.5)),
+            smoothing_weight=float(params.get("smoothing_weight", 0.15)),
+        ).to(device)
+    else:
+        coarse = CachedFeatureMSTCN(
+            feature_dim=feature_dim,
+            num_classes=cfg.model.num_classes,
+            heads=["phase"],
+            num_stages=int(params.get("num_stages", 3)),
+            num_layers=int(params.get("num_layers", 8)),
+            num_f_maps=int(params.get("num_f_maps", 64)),
+            kernel_size=int(params.get("kernel_size", 3)),
+        ).to(device)
     trainer = Trainer(
         coarse,
         cfg.training,

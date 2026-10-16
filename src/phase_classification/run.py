@@ -201,6 +201,7 @@ def _validate_feature_probe(cfg: ExperimentConfig, dl) -> None:
         "surgclip-ms-tcn",
         "feature-ms-tcn",
         "surgclip-ms-tcn-diffusion",
+        "surgclip-ms-tcnpp-diffusion",
     }
     feature_cache = cfg.dataset.feature_cache
     if feature_cache is None:
@@ -210,7 +211,7 @@ def _validate_feature_probe(cfg: ExperimentConfig, dl) -> None:
     if not feature_model:
         raise RunError(
             "dataset.feature_cache requires model.name: surgclip-ms-tcn "
-            "or surgclip-ms-tcn-diffusion."
+            "or a SurgCLIP MS-TCN diffusion variant."
         )
     if cfg.training.heads != ["phase"]:
         raise RunError("Cached SurgCLIP probing currently supports only the phase head.")
@@ -322,7 +323,10 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
 
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
     _validate_feature_probe(cfg, dl)
-    if cfg.model.name == "surgclip-ms-tcn-diffusion":
+    if cfg.model.name in {
+        "surgclip-ms-tcn-diffusion",
+        "surgclip-ms-tcnpp-diffusion",
+    }:
         from phase_classification.surgclip_mstcn_diffusion import (
             run_surgclip_mstcn_diffusion,
         )

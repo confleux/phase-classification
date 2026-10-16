@@ -1,0 +1,69 @@
+# Offline SurgCLIP feature + MS-TCN++ coarse predictor + residual diffusion.
+# Run: uv run phase-cls train configs/surgclip-ms-tcnpp-diffusion.yaml
+
+project:
+  name: surgclip-ms-tcnpp-diffusion
+  output_dir: outputs/surgclip-ms-tcnpp-diffusion/fold1
+  save_checkpoints: true
+
+dataset:
+  dataset_variant: cholect50-crossval
+  root_dir: /home/andreikrivenko/dataset/CholecT50
+  feature_cache: outputs/surgclip-diffusion/fold1/surgclip_embeddings.pt
+  test_fold: 1
+
+dataloader:
+  batch_size: 1
+  num_workers: 0
+  shuffle: true
+  pin_memory: false
+  persistent_workers: false
+
+model:
+  name: surgclip-ms-tcnpp-diffusion
+  params:
+    feature_dim: 256
+    num_refinement_stages: 3
+    generation_layers: 11
+    refinement_layers: 10
+    num_f_maps: 64
+    kernel_size: 3
+    dropout: 0.5
+    smoothing_weight: 0.15
+    refiner_epochs: 20
+    refiner_steps_per_epoch: 100
+    refiner_batch_size: 8
+    refiner_crop_length: 256
+    refiner_width: 96
+    refiner_layers: 6
+    diffusion_timesteps: 1000
+    sampling_steps: 25
+    refiner_learning_rate: 0.0002
+    refiner_weight_decay: 0.0001
+    correction_scale: 1.0
+    auxiliary_ce_weight: 1.0
+    test_samples: 1
+  num_classes:
+    phase: 7
+
+training:
+  heads: [phase]
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.01
+  weight_decay: 0.01
+  scheduler: cosine
+  class_weighting: none
+
+validation:
+  metrics: [f1_macro, jaccard, mean_accuracy, edit_score]
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: SurgCLIP MS-TCN++ diffusion CholecT50
+  run_name: surgclip-ms-tcnpp-diffusion-offline-fold1
+
+runtime:
+  device: cuda
+  mixed_precision: fp32
+  seed: 42

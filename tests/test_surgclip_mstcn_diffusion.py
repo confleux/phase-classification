@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch.utils.data import ConcatDataset, DataLoader
 
@@ -11,6 +12,8 @@ import mlflow
 from phase_classification.config import ExperimentConfig
 from phase_classification.data.surgclip_features import FeatureVideoDataset
 from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
+from phase_classification.losses import MSTCNLoss
+from phase_classification.models.ms_tcn import CachedFeatureMSTCNPlusPlus
 from phase_classification.surgclip_mstcn_diffusion import run_surgclip_mstcn_diffusion
 
 
@@ -26,7 +29,55 @@ def _video() -> FeatureVideoDataset:
     return FeatureVideoDataset(torch.randn(len(phase_ids), 4), tuple(labels))
 
 
-def test_combined_feature_mstcn_diffusion_training_smoke(tmp_path, monkeypatch):
+def test_cached_mstcnpp_prediction_and_refinement_stages():
+    model = CachedFeatureMSTCNPlusPlus(
+        feature_dim=8,
+        num_classes={"phase": 7},
+        heads=["phase"],
+        num_refinement_stages=2,
+        generation_layers=3,
+        refinement_layers=2,
+        num_f_maps=8,
+        dropout=0.0,
+    )
+    features = torch.randn(1, 12, 8)
+    targets = torch.nn.functional.one_hot(torch.randint(0, 7, (1, 12)), 7).float()
+    labels = (
+        torch.zeros(1, 12, 100),
+        torch.zeros(1, 12, 6),
+        torch.zeros(1, 12, 10),
+        torch.zeros(1, 12, 15),
+        targets,
+    )
+
+    logits = model(features)
+    loss = MSTCNLoss(model, ["phase"])(logits, labels)["total"]
+    loss.backward()
+    assert logits["phase"].shape == (1, 12, 7)
+    assert len(model.stage_logits["phase"]) == 3
+    assert model.smoothing_on_log_probs
+    assert model.smoothing_weight == 0.15
+    assert torch.isfinite(loss)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "architecture_params"),
+    [
+        ("surgclip-ms-tcn-diffusion", {"num_stages": 2, "num_layers": 1}),
+        (
+            "surgclip-ms-tcnpp-diffusion",
+            {
+                "num_refinement_stages": 1,
+                "generation_layers": 2,
+                "refinement_layers": 1,
+                "dropout": 0.0,
+            },
+        ),
+    ],
+)
+def test_combined_feature_tcn_diffusion_training_smoke(
+    tmp_path, monkeypatch, model_name, architecture_params
+):
     train, val, test = _video(), _video(), _video()
     data = SimpleNamespace(
         train=DataLoader(ConcatDataset([train]), batch_size=1),
@@ -35,19 +86,20 @@ def test_combined_feature_mstcn_diffusion_training_smoke(tmp_path, monkeypatch):
     )
     config = ExperimentConfig.model_validate(
         {
-            "project": {"output_dir": str(tmp_path), "save_checkpoints": False},
+            "project": {
+                "output_dir": str(tmp_path / model_name),
+                "save_checkpoints": False,
+            },
             "dataset": {
                 "root_dir": str(tmp_path),
                 "feature_cache": str(tmp_path / "features.pt"),
             },
             "dataloader": {"batch_size": 1, "num_workers": 0},
             "model": {
-                "name": "surgclip-ms-tcn-diffusion",
+                "name": model_name,
                 "num_classes": {"phase": 7},
                 "params": {
                     "feature_dim": 4,
-                    "num_stages": 2,
-                    "num_layers": 1,
                     "num_f_maps": 8,
                     "refiner_epochs": 1,
                     "refiner_steps_per_epoch": 1,
@@ -57,6 +109,7 @@ def test_combined_feature_mstcn_diffusion_training_smoke(tmp_path, monkeypatch):
                     "refiner_layers": 1,
                     "diffusion_timesteps": 4,
                     "sampling_steps": 2,
+                    **architecture_params,
                 },
             },
             "training": {

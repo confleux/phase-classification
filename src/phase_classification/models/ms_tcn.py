@@ -199,6 +199,177 @@ class CachedFeatureMSTCN(nn.Module):
         return {head: stage_logits[head][-1] for head in self.heads}
 
 
+class DualDilatedResidualBlock(nn.Module):
+    """MS-TCN++ prediction-generation layer with two receptive-field scales."""
+
+    def __init__(
+        self,
+        channels: int,
+        dilation_small: int,
+        dilation_large: int,
+        kernel_size: int = 3,
+        dropout: float = 0.5,
+    ):
+        super().__init__()
+        padding_small = (kernel_size - 1) * dilation_small // 2
+        padding_large = (kernel_size - 1) * dilation_large // 2
+        self.conv_small = nn.Conv1d(
+            channels, channels, kernel_size, padding=padding_small, dilation=dilation_small
+        )
+        self.conv_large = nn.Conv1d(
+            channels, channels, kernel_size, padding=padding_large, dilation=dilation_large
+        )
+        self.project = nn.Conv1d(2 * channels, channels, kernel_size=1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        small = torch.relu(self.conv_small(x))
+        large = torch.relu(self.conv_large(x))
+        combined = torch.relu(torch.cat((small, large), dim=1))
+        return x + self.dropout(self.project(combined))
+
+
+class RefinementResidualBlock(nn.Module):
+    """MS-TCN++ dilated residual block used by refinement stages."""
+
+    def __init__(
+        self,
+        channels: int,
+        dilation: int,
+        kernel_size: int = 3,
+        dropout: float = 0.5,
+    ):
+        super().__init__()
+        padding = (kernel_size - 1) * dilation // 2
+        self.dilated = nn.Conv1d(
+            channels, channels, kernel_size, padding=padding, dilation=dilation
+        )
+        self.project = nn.Conv1d(channels, channels, kernel_size=1)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.project(torch.relu(self.dilated(x)))
+        return x + self.dropout(residual)
+
+
+class _MSCTCNPlusPlusStage(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        num_classes: int,
+        num_f_maps: int,
+        layers: int,
+        kernel_size: int,
+        dropout: float,
+        dual_dilated: bool,
+    ):
+        super().__init__()
+        self.input_projection = nn.Conv1d(in_channels, num_f_maps, kernel_size=1)
+        if dual_dilated:
+            self.layers = nn.ModuleList(
+                [
+                    DualDilatedResidualBlock(
+                        num_f_maps,
+                        dilation_small=2**index,
+                        dilation_large=2 ** (layers - index - 1),
+                        kernel_size=kernel_size,
+                        dropout=dropout,
+                    )
+                    for index in range(layers)
+                ]
+            )
+        else:
+            self.layers = nn.ModuleList(
+                [
+                    RefinementResidualBlock(
+                        num_f_maps,
+                        dilation=2**index,
+                        kernel_size=kernel_size,
+                        dropout=dropout,
+                    )
+                    for index in range(layers)
+                ]
+            )
+        self.output_projection = nn.Conv1d(num_f_maps, num_classes, kernel_size=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.input_projection(x)
+        for layer in self.layers:
+            out = layer(out)
+        return self.output_projection(out)
+
+
+class CachedFeatureMSTCNPlusPlus(nn.Module):
+    """MS-TCN++ for cached feature sequences, with one prediction stage.
+
+    The prediction-generation stage uses dual-dilated layers. Refinement stages
+    receive only the preceding stage's class probabilities, as in MS-TCN++.
+    ``stage_logits`` follows the shared ``MSTCNLoss`` interface.
+    """
+
+    is_mstcn = True
+
+    def __init__(
+        self,
+        feature_dim: int,
+        num_classes: Mapping[str, int],
+        heads: list[str],
+        num_refinement_stages: int = 3,
+        generation_layers: int = 11,
+        refinement_layers: int = 10,
+        num_f_maps: int = 64,
+        kernel_size: int = 3,
+        dropout: float = 0.5,
+        smoothing_weight: float = 0.15,
+    ):
+        super().__init__()
+        if heads != ["phase"]:
+            raise ValueError("CachedFeatureMSTCNPlusPlus currently supports only the phase head.")
+        if min(feature_dim, generation_layers, refinement_layers, num_f_maps) < 1:
+            raise ValueError("Feature dimension, layers, and feature maps must be positive.")
+        if num_refinement_stages < 0:
+            raise ValueError("num_refinement_stages must be >= 0.")
+        self.heads = list(heads)
+        self.num_classes = num_classes["phase"]
+        self.smoothing_on_log_probs = True
+        self.smoothing_weight = smoothing_weight
+        self.generation = _MSCTCNPlusPlusStage(
+            feature_dim,
+            self.num_classes,
+            num_f_maps,
+            generation_layers,
+            kernel_size,
+            dropout,
+            dual_dilated=True,
+        )
+        self.refinement_stages = nn.ModuleList(
+            [
+                _MSCTCNPlusPlusStage(
+                    self.num_classes,
+                    self.num_classes,
+                    num_f_maps,
+                    refinement_layers,
+                    kernel_size,
+                    dropout,
+                    dual_dilated=False,
+                )
+                for _ in range(num_refinement_stages)
+            ]
+        )
+        self.stage_logits: dict[str, list[torch.Tensor]] | None = None
+
+    def forward(self, features: torch.Tensor) -> dict[str, torch.Tensor]:
+        if features.ndim != 3:
+            raise ValueError("CachedFeatureMSTCNPlusPlus expects features shaped (B, L, D).")
+        current = self.generation(features.float().transpose(1, 2))
+        stage_outputs = [current.transpose(1, 2)]
+        for stage in self.refinement_stages:
+            current = stage(torch.softmax(current, dim=1))
+            stage_outputs.append(current.transpose(1, 2))
+        self.stage_logits = {"phase": stage_outputs}
+        return {"phase": stage_outputs[-1]}
+
+
 class ConvNeXtMSTCN(_MSTCNBase):
     """ConvNeXt frame encoder + multi-stage MS-TCN temporal head."""
 

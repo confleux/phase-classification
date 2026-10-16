@@ -78,7 +78,8 @@ Frames are resized to the loader's fixed **256x448** (`image_size` is not
 configurable) for image-based models. Video decoding for HeiChole requires
 `opencv-python-headless` to be installed in the runtime environment.
 
-When `feature_cache` is set, use `surgclip-ms-tcn` or `surgclip-ms-tcn-diffusion`
+When `feature_cache` is set, use `surgclip-ms-tcn`, `surgclip-ms-tcn-diffusion`,
+or `surgclip-ms-tcnpp-diffusion`
 with `training.heads: [phase]` and `dataloader.batch_size: 1`. The cache can be
 the flat `features`/`paths` artifact or the per-video `splits` artifact produced
 by the SurgCLIP scripts. The loader checks video/frame alignment against
@@ -163,7 +164,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `surgclip-ms-tcn` (alias `feature-ms-tcn`), `surgclip-ms-tcn-diffusion`, `swin-cls` (alias `swin-classifier`) |
+| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `surgclip-ms-tcn` (alias `feature-ms-tcn`), `surgclip-ms-tcn-diffusion`, `surgclip-ms-tcnpp-diffusion`, `swin-cls` (alias `swin-classifier`) |
 | `params` | dict | `{}` | architecture-specific parameters; registry models reject unsupported keys |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -252,12 +253,21 @@ project's shared `Trainer`, `MSTCNLoss`, `MetricAccumulator`, checkpointing, and
 MLflow run lifecycle. Only the `phase` head is currently supported for cached
 SurgCLIP probing.
 
-`surgclip-ms-tcn-diffusion` is a two-stage custom run mode in `run.py`. It first
-trains the cached-feature MS-TCN as a coarse phase predictor, then conditions
-the existing residual diffusion refiner in `surgclip_diffusion.py` on the
-MS-TCN logits and SurgCLIP features. Diffusion learns a correction to the coarse
-phase probabilities; this does **not** use Meta-SurDiff's bilevel meta-weight
-objective. The run logs coarse and refined metrics to MLflow.
+`surgclip-ms-tcn-diffusion` and `surgclip-ms-tcnpp-diffusion` are two-stage
+custom run modes in `run.py`. Each trains a cached-feature temporal model as a
+coarse phase predictor, then conditions the existing residual diffusion
+refiner in `surgclip_diffusion.py` on that model's logits and SurgCLIP features.
+Diffusion learns a correction to the coarse phase probabilities; this does
+**not** use Meta-SurDiff's bilevel meta-weight objective. Both coarse and
+refined metrics are logged to MLflow.
+
+`surgclip-ms-tcnpp-diffusion` uses an MS-TCN++ prediction-generation stage with
+dual-dilated layers, followed by probability-only refinement stages. Its
+defaults follow the paper's four total stages (one generation stage, three
+refinement stages), 11 generation layers, 10 refinement layers, 64 feature maps,
+dropout 0.5, and smoothing weight 0.15 on log probabilities. The diffusion
+settings are kept the same as the MS-TCN experiment for a more direct
+architecture comparison.
 
 In addition to the MS-TCN parameters above, `model.params` accepts:
 
@@ -271,8 +281,9 @@ In addition to the MS-TCN parameters above, `model.params` accepts:
 | `correction_scale` / `auxiliary_ce_weight` | `1.0` / `1.0` | Residual strength and auxiliary classification loss |
 
 See [`configs/surgclip-ms-tcn-diffusion.yaml`](../configs/surgclip-ms-tcn-diffusion.yaml)
-for a runnable example. The supplied centered SurgCLIP cache and symmetric
-MS-TCN make this an **offline** experiment.
+and [`configs/surgclip-ms-tcnpp-diffusion.yaml`](../configs/surgclip-ms-tcnpp-diffusion.yaml)
+for runnable examples. The supplied centered SurgCLIP cache and symmetric
+temporal convolutions make both experiments **offline**.
 
 `swin-cls` (Swin Transformer encoder + per-head classifier in
 `models/swin_classifier.py`; alias `swin-classifier`):
