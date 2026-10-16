@@ -80,6 +80,27 @@ def build_dataloaders(cfg: ExperimentConfig) -> DataLoaders:
     if missing:
         raise DatasetUnavailableError("; ".join(missing))
 
+    feature_cache = cfg.dataset.feature_cache
+    if feature_cache is not None:
+        from phase_classification.data.surgclip_features import (
+            build_feature_dataloaders,
+        )
+
+        feature_loaders = build_feature_dataloaders(
+            dataset_dir=cfg.dataset.root_dir,
+            cache_path=feature_cache,
+            variant=cfg.dataset.dataset_variant,
+            test_fold=cfg.dataset.test_fold,
+            seed=cfg.runtime.seed,
+        )
+        # Feature datasets yield one whole video, so the helper's batch size is
+        # one; keep test datasets in the usual per-video form for shared eval.
+        return DataLoaders(
+            train=feature_loaders.train,
+            val=feature_loaders.val,
+            test=[loader.dataset for loader in feature_loaders.test],
+        )
+
     dataset = build_dataset(cfg.dataset)
     train_ds, val_ds, test_ds = dataset.build()
     seed = cfg.runtime.seed

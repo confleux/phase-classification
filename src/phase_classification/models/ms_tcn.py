@@ -140,6 +140,65 @@ class _MSTCNBase(nn.Module):
         return {h: self.stage_logits[h][-1] for h in self.heads}
 
 
+class CachedFeatureMSTCN(nn.Module):
+    """MS-TCN temporal head for precomputed per-frame feature sequences.
+
+    Input is ``(B, L, D)`` rather than decoded images. The module exposes the
+    same output and ``stage_logits`` interface as the image-backed MS-TCNs, so
+    it can use the shared :class:`Trainer` and :class:`MSTCNLoss`.
+    """
+
+    is_mstcn = True
+
+    def __init__(
+        self,
+        feature_dim: int,
+        num_classes: Mapping[str, int],
+        heads: list[str],
+        num_stages: int = 3,
+        num_layers: int = 8,
+        num_f_maps: int = 64,
+        kernel_size: int = 3,
+    ):
+        super().__init__()
+        if feature_dim < 1 or num_stages < 1:
+            raise ValueError("feature_dim and num_stages must be >= 1")
+        self.heads = list(heads)
+        self.head_sizes = {head: num_classes[head] for head in self.heads}
+        self.stages = nn.ModuleList()
+        in_channels = feature_dim
+        for _ in range(num_stages):
+            self.stages.append(
+                SingleStageTCN(
+                    in_channels,
+                    num_f_maps,
+                    num_layers,
+                    kernel_size,
+                    self.head_sizes,
+                )
+            )
+            in_channels = feature_dim + sum(self.head_sizes.values())
+        self.stage_logits: dict[str, list[torch.Tensor]] | None = None
+
+    def forward(self, features: torch.Tensor) -> dict[str, torch.Tensor]:
+        if features.ndim != 3:
+            raise ValueError("CachedFeatureMSTCN expects features shaped (B, L, D).")
+        frame_features = features.float().transpose(1, 2)
+        current = frame_features
+        stage_logits: dict[str, list[torch.Tensor]] = {head: [] for head in self.heads}
+        previous: dict[str, torch.Tensor] | None = None
+        for stage in self.stages:
+            if previous is not None:
+                refined = torch.cat([previous[head] for head in self.heads], dim=1)
+                current = torch.cat([frame_features, refined], dim=1)
+            output = stage(current)
+            for head in self.heads:
+                stage_logits[head].append(output[head].transpose(1, 2))
+            previous = {head: torch.softmax(output[head], dim=1) for head in self.heads}
+        self.stage_logits = stage_logits
+        return {head: stage_logits[head][-1] for head in self.heads}
+
+
 class ConvNeXtMSTCN(_MSTCNBase):
     """ConvNeXt frame encoder + multi-stage MS-TCN temporal head."""
 

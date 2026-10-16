@@ -65,4 +65,6 @@ def check_paths(cfg: ExperimentConfig, dataset_root: Path | None = None) -> list
         missing.append(f"missing 'videos' dir under {root}")
     if not labels_dir.is_dir():
         missing.append(f"missing 'labels' dir under {root}")
+    if cfg.dataset.feature_cache is not None and not cfg.dataset.feature_cache.is_file():
+        missing.append(f"feature cache not found: {cfg.dataset.feature_cache}")
     return missing

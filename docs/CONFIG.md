@@ -68,14 +68,22 @@ The config has 8 top-level sections. All are optional except `dataset`.
 |---|---|---|---|
 | `dataset_variant` | str | `cholect50-crossval` | `cholect45-crossval`, `cholect50-crossval`, `cholect50-challenge`, `cholect50`, `cholect45`, `cholect50-subset`, `cholect50-small`, `heichole` |
 | `root_dir` | Path | — (**required**) | dataset root; expected subdirectories and files depend on the variant (see below) |
+| `feature_cache` | Path \| null | `null` | optional SurgCLIP `.pt` feature cache; enables frozen-feature training instead of RGB decoding |
 | `test_fold` | int | `1` | `1..5`; official CholecT50 fold, or HeiChole's deterministic local five-fold split |
 | `sequence_length` | int | `1` | `1` = single frame; `>=2` = contiguous video-frame windows |
 | `augmentations` | list[str] | `["original"]` | `original`, `vflip`, `hflip`, `contrast`, `rot90`, `brightness`, `random_contrast` |
 | `normalize` | bool | `true` | ImageNet normalization |
 
 Frames are resized to the loader's fixed **256x448** (`image_size` is not
-configurable). Video decoding for HeiChole requires `opencv-python-headless` to
-be installed in the runtime environment.
+configurable) for image-based models. Video decoding for HeiChole requires
+`opencv-python-headless` to be installed in the runtime environment.
+
+When `feature_cache` is set, use the `surgclip-ms-tcn` model with
+`training.heads: [phase]` and `dataloader.batch_size: 1`. The cache can be the
+flat `features`/`paths` artifact or the per-video `splits` artifact produced by
+the SurgCLIP scripts. The loader checks video/frame alignment against CholecT50
+labels and batches one complete video at a time. The MS-TCN head trains on these
+frozen features; images and the SurgCLIP encoder are not loaded.
 
 `cholect*` variants use the vendored CholecT50 loader and its existing data
 layout. `heichole` uses this local layout (the challenge's data page describes
@@ -155,7 +163,7 @@ and uses `mode=max` for accuracy-like metrics.
 
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
-| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `swin-cls` (alias `swin-classifier`) |
+| `name` | str | `resnet18` | `resnet18`, `convnext-ms-tcn` (alias `ms-tcn`), `swin-ms-tcn`, `surgclip-ms-tcn` (alias `feature-ms-tcn`), `swin-cls` (alias `swin-classifier`) |
 | `params` | dict | `{}` | see table below — unknown keys → `ModelRegistryError` |
 | `num_classes` | dict[str,int] | see below | keys must be in `phase, tool, verb, target, triplet` |
 
@@ -226,6 +234,23 @@ head in `models/ms_tcn.py`; **requires `dataset.sequence_length >= 2`**):
 
 Same per-frame `(B, L, K)` output and `MSTCNLoss` training as
 `convnext-ms-tcn`, but with a Swin encoder. See `configs/swin-ms-tcn.yaml`.
+
+`surgclip-ms-tcn` (alias `feature-ms-tcn`) applies the shared temporal stages
+to cached SurgCLIP feature sequences; it has **no image encoder** and requires
+`dataset.feature_cache`:
+
+| Param | Type | Default | Notes |
+|---|---|---|---|
+| `feature_dim` | int | `256` | must match the final dimension in the feature cache |
+| `num_stages` | int | `3` | number of MS-TCN stages |
+| `num_layers` | int | `8` | dilated temporal layers per stage |
+| `num_f_maps` | int | `64` | hidden channels of the temporal convolutions |
+| `kernel_size` | int | `3` | temporal convolution kernel size |
+
+Input is one full video of cached features `(1, T, D)`. The model uses the
+project's shared `Trainer`, `MSTCNLoss`, `MetricAccumulator`, checkpointing, and
+MLflow run lifecycle. Only the `phase` head is currently supported for cached
+SurgCLIP probing.
 
 `swin-cls` (Swin Transformer encoder + per-head classifier in
 `models/swin_classifier.py`; alias `swin-classifier`):
@@ -312,6 +337,65 @@ Only `dataset` is required; everything else defaults:
 dataset:
   dataset_variant: cholect50-small
   root_dir: /data/cholect50
+```
+
+## Example: SurgCLIP feature MS-TCN with MLflow
+
+Save this as a YAML file and run `uv run phase-cls train <config.yaml>`. The
+cache must match the dataset variant and test fold. This configuration follows
+the paper's temporal-probing head defaults; the cache's existing feature
+dimension and clip construction are used as-is.
+
+```yaml
+project:
+  name: surgclip-ms-tcn
+  output_dir: outputs/surgclip-ms-tcn/fold1
+  save_checkpoints: true
+
+dataset:
+  dataset_variant: cholect50-crossval
+  root_dir: /data/cholect50
+  feature_cache: /path/to/surgclip_embeddings.pt
+  test_fold: 1
+
+dataloader:
+  batch_size: 1
+  num_workers: 0
+  shuffle: true
+  pin_memory: false
+  persistent_workers: false
+
+model:
+  name: surgclip-ms-tcn
+  params:
+    feature_dim: 256
+    num_stages: 3
+    num_layers: 8
+    num_f_maps: 64
+    kernel_size: 3
+  num_classes: { phase: 7 }
+
+training:
+  heads: [phase]
+  epochs: 100
+  optimizer: adamw
+  learning_rate: 0.01
+  weight_decay: 0.01
+  scheduler: cosine
+  class_weighting: none
+
+validation:
+  metrics: [f1_macro, jaccard, mean_accuracy, edit_score]
+
+mlflow:
+  tracking_uri: http://localhost:5000
+  experiment_name: SurgCLIP CholecT50 probes
+  run_name: surgclip-ms-tcn-fold1
+
+runtime:
+  device: cuda
+  mixed_precision: fp32
+  seed: 42
 ```
 
 ## Example: HeiChole phase recognition

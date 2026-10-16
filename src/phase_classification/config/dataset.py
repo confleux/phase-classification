@@ -44,6 +44,9 @@ class DatasetConfig(StrictModel):
 
     dataset_variant: DATASET_VARIANTS = "cholect50-crossval"
     root_dir: Path
+    # When set, use cached per-frame feature sequences instead of decoding RGB
+    # frames. Intended for frozen-feature probes such as SurgCLIP + MS-TCN.
+    feature_cache: Path | None = None
     test_fold: int = Field(default=1, ge=1, le=5)
     sequence_length: int = Field(default=1, ge=1)
     augmentations: list[DataAugmentation] = Field(default_factory=lambda: ["original"])

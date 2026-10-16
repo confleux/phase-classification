@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+from torch.utils.data import DataLoader
 
 import mlflow
 from phase_classification.config import ExperimentConfig
@@ -101,7 +102,31 @@ def _losses(accumulator: LossAccumulator, prefix: str) -> dict[str, float]:
     }
 
 
-def _epoch_metrics(trainer: Trainer, loader, prefix: str) -> dict[str, float]:
+def _epoch_metrics(
+    trainer: Trainer, loader, prefix: str, per_video: bool = False
+) -> dict[str, float]:
+    if per_video:
+        accumulators = []
+        loss_accumulators = []
+        for dataset in loader.dataset.datasets:
+            accumulator = trainer.new_accumulator()
+            loss_accumulator = trainer.new_loss_accumulator()
+            trainer.evaluate_accumulate(
+                DataLoader(dataset, batch_size=1),
+                accumulator,
+                loss_accumulator=loss_accumulator,
+            )
+            accumulators.append(accumulator)
+            loss_accumulators.append(loss_accumulator)
+        if not accumulators:
+            return {}
+        metrics = MetricAccumulator.merged(accumulators).compute()
+        losses = _losses(LossAccumulator.merged(loss_accumulators), prefix="")
+        return {
+            **{f"{prefix}_{key}": value for key, value in losses.items()},
+            **{f"{prefix}_{key}": value for key, value in metrics.items()},
+        }
+
     accumulator = trainer.new_accumulator()
     loss_accumulator = trainer.new_loss_accumulator()
     trainer.evaluate_accumulate(
@@ -141,7 +166,22 @@ def _class_weights(
     """Inverse-frequency class weights when ``class_weighting == 'inverse'``."""
     if cfg.training.class_weighting != "inverse":
         return None
+    from phase_classification.heads import HEAD_TUPLE_INDEX
     from phase_classification.losses import compute_class_weights
+
+    if cfg.dataset.feature_cache is not None:
+        weights = {}
+        for head in cfg.training.heads:
+            counts = sum(
+                (
+                    video.labels[HEAD_TUPLE_INDEX[head]].sum(dim=0)
+                    for video in dl.train.dataset.datasets
+                ),
+                start=torch.zeros(cfg.model.num_classes[head]),
+            )
+            counts[counts == 0] = counts.max().clamp(min=1)
+            weights[head] = (counts.sum() / (len(counts) * counts)).to(device)
+        return weights
 
     print("Computing inverse-frequency class weights from the train split...")
     # Use the underlying dataset (label JSONs only) instead of the loader
@@ -153,6 +193,28 @@ def _class_weights(
     for head, w in class_weights.items():
         print(f"  {head} weights: {[round(x, 3) for x in w.tolist()]}")
     return class_weights
+
+
+def _validate_feature_probe(cfg: ExperimentConfig, dl) -> None:
+    feature_model = cfg.model.name in {"surgclip-ms-tcn", "feature-ms-tcn"}
+    feature_cache = cfg.dataset.feature_cache
+    if feature_cache is None:
+        if feature_model:
+            raise RunError("surgclip-ms-tcn requires dataset.feature_cache.")
+        return
+    if not feature_model:
+        raise RunError("dataset.feature_cache requires model.name: surgclip-ms-tcn.")
+    if cfg.training.heads != ["phase"]:
+        raise RunError("Cached SurgCLIP probing currently supports only the phase head.")
+    if cfg.dataloader.batch_size != 1:
+        raise RunError("Full-video feature training requires dataloader.batch_size: 1.")
+    feature_dim = int(dl.train.dataset.datasets[0].features.shape[-1])
+    configured_dim = int(cfg.model.params.get("feature_dim", 256))
+    if feature_dim != configured_dim:
+        raise RunError(
+            f"Feature cache dimension is {feature_dim}, but model.params.feature_dim "
+            f"is {configured_dim}. Set it to match the cache."
+        )
 
 
 def _train_epochs(
@@ -176,7 +238,14 @@ def _train_epochs(
 
     try:
         for epoch in range(1, cfg.training.epochs + 1):
-            train_accumulator = trainer.new_accumulator()
+            if cfg.dataset.feature_cache is not None and "edit_score" in metric_names:
+                train_accumulator = MetricAccumulator(
+                    cfg.training.heads,
+                    [metric for metric in metric_names if metric != "edit_score"],
+                    cfg.model.num_classes,
+                )
+            else:
+                train_accumulator = trainer.new_accumulator()
             train_loss_accumulator = trainer.new_loss_accumulator()
             train_loss, train_metrics = trainer.train_epoch(
                 dl.train,
@@ -185,7 +254,12 @@ def _train_epochs(
             )
             train_losses = _losses(train_loss_accumulator, prefix="train")
             train_metrics = {f"train_{k}": v for k, v in train_metrics.items()}
-            val_metrics = _epoch_metrics(trainer, dl.val, prefix="val")
+            val_metrics = _epoch_metrics(
+                trainer,
+                dl.val,
+                prefix="val",
+                per_video=cfg.dataset.feature_cache is not None,
+            )
             mlflow.log_metrics(
                 {
                     "train_loss": train_loss,
@@ -239,6 +313,7 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
         raise RunError(f"Cannot build dataloaders: {exc}")
 
     device = resolve_device(cfg.runtime.device, cfg.runtime.cuda_device)
+    _validate_feature_probe(cfg, dl)
     model = build_model(cfg.model, heads=cfg.training.heads)
     counts = _count_parameters(model)
     print(

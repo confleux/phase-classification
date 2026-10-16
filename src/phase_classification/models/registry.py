@@ -9,7 +9,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from phase_classification.config.model import ModelConfig
-from phase_classification.models.ms_tcn import ConvNeXtMSTCN, SwinMSTCN
+from phase_classification.models.ms_tcn import (
+    CachedFeatureMSTCN,
+    ConvNeXtMSTCN,
+    SwinMSTCN,
+)
 from phase_classification.models.resnet18 import ResNet18Classifier
 from phase_classification.models.swin_classifier import SwinClassifier
 
@@ -31,6 +35,14 @@ _MSTCN_PARAMS: dict[str, Any] = {
     "freeze_backbone": False,
     "num_stages": 4,
     "num_layers": 10,
+    "num_f_maps": 64,
+    "kernel_size": 3,
+}
+
+_CACHED_MSTCN_PARAMS: dict[str, Any] = {
+    "feature_dim": 256,
+    "num_stages": 3,
+    "num_layers": 8,
     "num_f_maps": 64,
     "kernel_size": 3,
 }
@@ -93,6 +105,19 @@ def _build_swin_mstcn(cfg: ModelConfig, heads: list[str]) -> SwinMSTCN:
     return _build_mstcn(cfg, heads, SwinMSTCN, "t", "swin-ms-tcn")
 
 
+def _build_cached_feature_mstcn(cfg: ModelConfig, heads: list[str]) -> CachedFeatureMSTCN:
+    p = _pop_params("surgclip-ms-tcn", cfg.params, _CACHED_MSTCN_PARAMS)
+    return CachedFeatureMSTCN(
+        feature_dim=int(p["feature_dim"]),
+        num_classes=cfg.num_classes,
+        heads=heads,
+        num_stages=int(p["num_stages"]),
+        num_layers=int(p["num_layers"]),
+        num_f_maps=int(p["num_f_maps"]),
+        kernel_size=int(p["kernel_size"]),
+    )
+
+
 def _build_swin_classifier(cfg: ModelConfig, heads: list[str]) -> SwinClassifier:
     p = _pop_params("swin-cls", cfg.params, _SWIN_CLASSIFIER_PARAMS)
     return SwinClassifier(
@@ -110,6 +135,8 @@ _BUILDERS = {
     "convnext-ms-tcn": _build_convnext_mstcn,
     "ms-tcn": _build_convnext_mstcn,
     "swin-ms-tcn": _build_swin_mstcn,
+    "surgclip-ms-tcn": _build_cached_feature_mstcn,
+    "feature-ms-tcn": _build_cached_feature_mstcn,
     "swin-cls": _build_swin_classifier,
     "swin-classifier": _build_swin_classifier,
 }
