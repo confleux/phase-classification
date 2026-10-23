@@ -25,7 +25,8 @@ SurgCLIP from aperezr20/SurgLaVi, MedIA'26):
     bidirectional LSTM + per-frame classification head as surgvlp_lstm.py
     (class-balanced cross-entropy), reporting metrics computed with
     ``phase_classification.metrics.MetricAccumulator`` (edit_score is the mean
-    over per-video test sequences).
+    over per-video test sequences). Optionally, ``--temporal-adapter`` adds a
+    small residual temporal-convolution adapter before the BiLSTM.
 
 The feature datasets, BiLSTM head, batch sampler, and training loop are reused
 from ``surgvlp_lstm.py`` so results stay directly comparable; only the encoder
@@ -98,6 +99,7 @@ from phase_classification.data.cholec_t50 import CholecT50
 from phase_classification.engine import resolve_device
 from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
 from phase_classification.metrics import MetricAccumulator
+from phase_classification.models.temporal_adapter import ResidualTemporalAdapter
 
 MODEL_NAME_MAP = {
     "surgclip-b": "SurgCLIP-B",
@@ -174,6 +176,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--layers", type=int, default=1)
     p.add_argument("--no-bidirectional", action="store_true", help="Disable bidirectional LSTM")
     p.add_argument("--dropout", type=float, default=0.3)
+    p.add_argument(
+        "--temporal-adapter",
+        action="store_true",
+        help="Add a trainable residual temporal adapter before the BiLSTM",
+    )
+    p.add_argument(
+        "--adapter-dim",
+        type=int,
+        default=64,
+        help="Bottleneck width of the temporal adapter",
+    )
     p.add_argument("--heads", default="phase", help="Comma-separated heads (default: phase)")
     p.add_argument(
         "--metrics",
@@ -608,14 +621,25 @@ def main() -> None:
     train_ds, val_ds, test_ds = feat_ds.build()
     print(f"train: {len(train_ds)} val: {len(val_ds)} test: {len(test_ds)}")
 
-    model = PeskaVLPBiLSTM(
+    classifier = PeskaVLPBiLSTM(
         feat_dim=features.shape[-1],
         lstm_hidden=args.hidden,
         num_layers=args.layers,
         bidirectional=not args.no_bidirectional,
         num_classes=num_classes[heads[0]],
         dropout=args.dropout,
-    ).to(device)
+    )
+    if args.temporal_adapter:
+        model = nn.Sequential(
+            ResidualTemporalAdapter(
+                feature_dim=features.shape[-1],
+                bottleneck_dim=args.adapter_dim,
+            ),
+            classifier,
+        )
+    else:
+        model = classifier
+    model = model.to(device)
     print(model)
 
     optimizer = torch.optim.Adam(
@@ -665,6 +689,9 @@ def main() -> None:
             best_primary = primary
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
     test_losses, test_accs = [], []
     for video_ds in test_ds:
         loader = DataLoader(
@@ -686,6 +713,8 @@ def main() -> None:
     print(f"Test metrics: {test_metrics}")
 
     out_dir = Path(args.output_dir)
+    if args.temporal_adapter:
+        out_dir = out_dir / "temporal-adapter"
     out_dir.mkdir(parents=True, exist_ok=True)
     if best_state is not None:
         torch.save(best_state, out_dir / "best.pt")
