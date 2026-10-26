@@ -21,6 +21,7 @@ HEADS = tuple(HEAD_TUPLE_INDEX)
 
 class TrainingConfig(StrictModel):
     epochs: int = Field(default=50, ge=1)
+    early_stopping_patience: int | None = Field(default=None, ge=1)
     optimizer: Literal[OPTIMIZERS] = "adamw"
     learning_rate: float = Field(default=1e-3, gt=0.0)
     weight_decay: float = Field(default=0.0, ge=0.0)

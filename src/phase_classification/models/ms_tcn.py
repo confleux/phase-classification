@@ -15,13 +15,18 @@ from phase_classification.models.backbones import (
 class TemporalResidualBlock(nn.Module):
     """Dilated residual 1D temporal conv (BN + ReLU + residual)."""
 
-    def __init__(self, channels: int, kernel: int, dilation: int):
+    def __init__(
+        self, channels: int, kernel: int, dilation: int, dropout: float = 0.0
+    ):
         super().__init__()
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1).")
         padding = (kernel - 1) * dilation // 2
         self.block = nn.Sequential(
             nn.ReLU(inplace=True),
             nn.Conv1d(channels, channels, kernel, dilation=dilation, padding=padding),
             nn.BatchNorm1d(channels),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -41,12 +46,15 @@ class SingleStageTCN(nn.Module):
         num_layers: int,
         kernel: int,
         head_sizes: dict[str, int],
+        dropout: float = 0.0,
     ):
         super().__init__()
         self.in_conv = nn.Conv1d(in_channels, num_f_maps, 1)
         self.layers = nn.ModuleList(
             [
-                TemporalResidualBlock(num_f_maps, kernel, dilation=2**i)
+                TemporalResidualBlock(
+                    num_f_maps, kernel, dilation=2**i, dropout=dropout
+                )
                 for i in range(num_layers)
             ]
         )
@@ -159,10 +167,13 @@ class CachedFeatureMSTCN(nn.Module):
         num_layers: int = 8,
         num_f_maps: int = 64,
         kernel_size: int = 3,
+        dropout: float = 0.0,
     ):
         super().__init__()
         if feature_dim < 1 or num_stages < 1:
             raise ValueError("feature_dim and num_stages must be >= 1")
+        if not 0.0 <= dropout < 1.0:
+            raise ValueError("dropout must be in [0, 1).")
         self.heads = list(heads)
         self.head_sizes = {head: num_classes[head] for head in self.heads}
         self.stages = nn.ModuleList()
@@ -175,6 +186,7 @@ class CachedFeatureMSTCN(nn.Module):
                     num_layers,
                     kernel_size,
                     self.head_sizes,
+                    dropout,
                 )
             )
             in_channels = feature_dim + sum(self.head_sizes.values())

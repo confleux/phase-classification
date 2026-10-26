@@ -136,6 +136,7 @@ is documented on the [submission page](https://www.synapse.org/#!Synapse:syn1882
 | Field | Type | Default | Allowed values / notes |
 |---|---|---|---|
 | `epochs` | int | `50` | `>= 1` (mini-batch size comes from `dataloader.batch_size`) |
+| `early_stopping_patience` | int \| null | `null` | Stop after this many consecutive epochs without improvement in the primary validation metric; `null` disables early stopping |
 | `optimizer` | str | `adamw` | `sgd`, `adam`, `adamw` |
 | `learning_rate` | float | `0.001` | `> 0` |
 | `weight_decay` | float | `0.0` | `>= 0` |
@@ -247,6 +248,7 @@ to cached SurgCLIP feature sequences; it has **no image encoder** and requires
 | `num_layers` | int | `8` | dilated temporal layers per stage |
 | `num_f_maps` | int | `64` | hidden channels of the temporal convolutions |
 | `kernel_size` | int | `3` | temporal convolution kernel size |
+| `dropout` | float | `0.0` | dropout probability in temporal residual blocks (`0 <= p < 1`) |
 
 Input is one full video of cached features `(1, T, D)`. The model uses the
 project's shared `Trainer`, `MSTCNLoss`, `MetricAccumulator`, checkpointing, and
@@ -279,6 +281,7 @@ In addition to the MS-TCN parameters above, `model.params` accepts:
 | `diffusion_timesteps` / `sampling_steps` | `1000` / `25` | Forward and reverse diffusion steps |
 | `refiner_learning_rate` / `refiner_weight_decay` | `0.0002` / `0.0001` | AdamW settings |
 | `correction_scale` / `auxiliary_ce_weight` | `1.0` / `1.0` | Residual strength and auxiliary classification loss |
+| `dropout` | `0.0` (MS-TCN), `0.5` (MS-TCN++) | Dropout probability in the coarse temporal model (`0 <= p < 1`) |
 
 See [`configs/surgclip-ms-tcn-diffusion.yaml`](../configs/surgclip-ms-tcn-diffusion.yaml)
 and [`configs/surgclip-ms-tcnpp-diffusion.yaml`](../configs/surgclip-ms-tcnpp-diffusion.yaml)

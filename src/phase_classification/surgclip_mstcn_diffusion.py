@@ -101,6 +101,7 @@ def run_surgclip_mstcn_diffusion(
             num_layers=int(params.get("num_layers", 8)),
             num_f_maps=int(params.get("num_f_maps", 64)),
             kernel_size=int(params.get("kernel_size", 3)),
+            dropout=float(params.get("dropout", 0.0)),
         ).to(device)
     trainer = Trainer(
         coarse,

@@ -182,9 +182,11 @@ def _train_epochs(
     """
     best_metric = float("-inf") if higher_better else float("inf")
     best_state = None
+    best_epoch = None
     primary_metric = (
         f"val_{cfg.training.heads[0]}_{metric_names[0]}" if metric_names else None
     )
+    epochs_without_improvement = 0
 
     try:
         for epoch in range(1, cfg.training.epochs + 1):
@@ -222,7 +224,11 @@ def _train_epochs(
             value = val_metrics.get(primary_metric) if primary_metric else None
             if value is not None and _is_better(value, best_metric, higher_better):
                 best_metric = value
+                best_epoch = epoch
                 best_state = _clone_state_dict(model)
+                epochs_without_improvement = 0
+            elif value is not None:
+                epochs_without_improvement += 1
             scheduler_metric = (
                 value if cfg.training.scheduler == "plateau" and value is not None else None
             )
@@ -232,8 +238,23 @@ def _train_epochs(
                 f"train_loss={train_loss:.4f} "
                 + " ".join(f"{k}={v:.4f}" for k, v in val_metrics.items())
             )
+            patience = cfg.training.early_stopping_patience
+            if patience is not None and epochs_without_improvement >= patience:
+                print(
+                    f"Early stopping at epoch {epoch}: {primary_metric} did not "
+                    f"improve for {patience} consecutive epochs."
+                )
+                break
     except KeyboardInterrupt:
         print("Training interrupted; finishing with the best checkpoint.")
+    if best_epoch is not None and primary_metric is not None:
+        mlflow.log_metrics(
+            {
+                f"best_{primary_metric}": best_metric,
+                "best_epoch": float(best_epoch),
+            },
+            step=best_epoch,
+        )
     return best_state
 
 

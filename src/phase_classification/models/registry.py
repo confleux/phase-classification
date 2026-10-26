@@ -45,6 +45,7 @@ _CACHED_MSTCN_PARAMS: dict[str, Any] = {
     "num_layers": 8,
     "num_f_maps": 64,
     "kernel_size": 3,
+    "dropout": 0.0,
 }
 
 _SWIN_CLASSIFIER_PARAMS: dict[str, Any] = {
@@ -115,6 +116,7 @@ def _build_cached_feature_mstcn(cfg: ModelConfig, heads: list[str]) -> CachedFea
         num_layers=int(p["num_layers"]),
         num_f_maps=int(p["num_f_maps"]),
         kernel_size=int(p["kernel_size"]),
+        dropout=float(p["dropout"]),
     )
 
 

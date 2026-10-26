@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from phase_classification.config.model import ModelConfig
 from phase_classification.models import ModelRegistryError, build_model
-from phase_classification.models.ms_tcn import ConvNeXtMSTCN, SwinMSTCN
+from phase_classification.models.ms_tcn import (
+    CachedFeatureMSTCN,
+    ConvNeXtMSTCN,
+    SwinMSTCN,
+)
 from phase_classification.models.resnet18 import ResNet18Classifier
 from phase_classification.models.swin_classifier import SwinClassifier
 
@@ -69,6 +74,21 @@ class TestBuildModel:
             ModelConfig(name="swin-classifier", num_classes=num_classes), heads=["phase"]
         )
         assert isinstance(model, SwinClassifier)
+
+    def test_cached_feature_ms_tcn_dropout(self, num_classes):
+        model = build_model(
+            ModelConfig(
+                name="surgclip-ms-tcn",
+                num_classes=num_classes,
+                params={"feature_dim": 8, "num_layers": 1, "dropout": 0.5},
+            ),
+            heads=["phase"],
+        )
+        assert isinstance(model, CachedFeatureMSTCN)
+        assert any(
+            isinstance(layer, torch.nn.Dropout) and layer.p == 0.5
+            for layer in model.modules()
+        )
 
     def test_default_heads_all(self, num_classes):
         model = build_model(ModelConfig(name="resnet18", num_classes=num_classes))

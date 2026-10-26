@@ -25,16 +25,18 @@ model:
     feature_dim: 256
     num_stages: 3
     num_layers: 8
-    num_f_maps: 64
+    num_f_maps: 32
     kernel_size: 3
+    dropout: 0.5
   num_classes:
     phase: 7
 
 training:
   heads: [phase]
   epochs: 100
+  early_stopping_patience: 10
   optimizer: adamw
-  learning_rate: 0.01
+  learning_rate: 0.001
   weight_decay: 0.01
   scheduler: cosine
   class_weighting: none

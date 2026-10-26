@@ -97,6 +97,7 @@ def test_cached_feature_mstcn_uses_shared_mstcn_loss():
         num_stages=2,
         num_layers=2,
         num_f_maps=16,
+        dropout=0.5,
     )
     features = torch.randn(1, 12, 8)
     phase_labels = torch.nn.functional.one_hot(torch.randint(0, 7, (1, 12)), 7).float()
@@ -113,4 +114,8 @@ def test_cached_feature_mstcn_uses_shared_mstcn_loss():
     loss.backward()
     assert logits["phase"].shape == (1, 12, 7)
     assert len(model.stage_logits["phase"]) == 2
+    assert any(
+        isinstance(layer, torch.nn.Dropout) and layer.p == 0.5
+        for layer in model.modules()
+    )
     assert torch.isfinite(loss)

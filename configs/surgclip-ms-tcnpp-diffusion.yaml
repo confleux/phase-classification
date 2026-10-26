@@ -26,7 +26,7 @@ model:
     num_refinement_stages: 3
     generation_layers: 11
     refinement_layers: 10
-    num_f_maps: 64
+    num_f_maps: 32
     kernel_size: 3
     dropout: 0.5
     smoothing_weight: 0.15
@@ -49,8 +49,9 @@ model:
 training:
   heads: [phase]
   epochs: 100
+  early_stopping_patience: 10
   optimizer: adamw
-  learning_rate: 0.01
+  learning_rate: 0.001
   weight_decay: 0.01
   scheduler: cosine
   class_weighting: none
