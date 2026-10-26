@@ -6,7 +6,7 @@ under ``<root>/<split>/`` and writes one CSV per video plus a summary JSON.
 
 Example::
 
-    uv run python experiments/endoscapes_predict.py \
+    uv run phase-cls-endoscapes-predict \
         --root /mnt/nvme1/user_files/skirillova/skirillova/datasets/endoscapes \
         --split test --config configs/ms-tcn.yaml \
         --checkpoint /path/to/model.pth --sample-every 25
@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -27,14 +26,11 @@ import numpy as np
 import torch
 from torchvision import transforms
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
 from phase_classification.engine import resolve_device
 from phase_classification.heads import DEFAULT_NUM_CLASSES
 from phase_classification.loader import load_config
 from phase_classification.models import build_model
+from phase_classification.workflows import PROJECT_ROOT
 
 VIDEO_EXTENSIONS = {".avi", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg"}
 PHASE_NAMES = [
@@ -58,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--config",
-        default=str(REPO_ROOT / "configs" / "ms-tcn.yaml"),
+        default=str(PROJECT_ROOT / "configs" / "ms-tcn.yaml"),
         help="Model/config YAML matching the checkpoint architecture",
     )
     parser.add_argument("--checkpoint", required=True, help="Model weights (.pt/.pth)")
@@ -77,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None, help="Override configured device")
     parser.add_argument(
         "--output",
-        default=str(REPO_ROOT / "outputs" / "endoscapes-predictions"),
+        default=str(PROJECT_ROOT / "outputs" / "endoscapes-predictions"),
         help="Output directory for prediction CSVs and summary.json",
     )
     return parser.parse_args()

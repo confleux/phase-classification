@@ -48,7 +48,7 @@
 Результаты запуска, предоставленные пользователем:
 
 ```bash
-uv run experiments/surgvlp_lstm.py \
+uv run phase-cls-surgvlp \
   --dataset-dir ~/dataset/CholecT50/ \
   --model peskavlp \
   --embeddings-pt ./outputs/embeddings/peskavlp-2026-09-18T15:13:43/peskavlp_features.pt \
@@ -198,15 +198,23 @@ uv run python -m phase_classification.surgclip_diffusion \
 Ниже перечислены реализованные сценарии экспериментов и оценки. Их запуск и
 результаты **не подтверждены артефактами в этой рабочей директории**.
 
+Основной сценарий обучения остаётся в `phase-cls train`. Дополнительные
+оценочные и foundation-model workflows находятся в
+`src/phase_classification/workflows/`; установите их зависимости командой
+`uv sync --extra workflows` и запускайте соответствующими командами
+`phase-cls-heichole-eval`, `phase-cls-robustness`, `phase-cls-endoscapes-predict`,
+`phase-cls-surgvlp` или `phase-cls-surgclip`. Ноутбук исследования DINOv2 и
+инструмент визуализации остаются в `experiments/`.
+
 | Эксперимент | Код | Назначение | Обучение? |
 | --- | --- | --- | --- |
-| SurgVLP / PeskaVLP | [`experiments/surgvlp_lstm.py`](experiments/surgvlp_lstm.py) | Извлечение покадровых эмбеддингов; по выбору — классификация фаз без дообучения по текстовым описаниям фаз или обучение двунаправленной LSTM-головы на CholecT50. | Опционально обучается LSTM |
-| SurgCLIP / SurgLaVi | [`experiments/surgclip_lstm.py`](experiments/surgclip_lstm.py) | Извлечение эмбеддингов клипов; по выбору — классификация фаз без дообучения или обучение сопоставимой LSTM-головы. | Опционально обучается LSTM |
+| SurgVLP / PeskaVLP | [`src/phase_classification/workflows/surgvlp_lstm.py`](src/phase_classification/workflows/surgvlp_lstm.py) | Извлечение покадровых эмбеддингов; по выбору — классификация фаз без дообучения по текстовым описаниям фаз или обучение двунаправленной LSTM-головы на CholecT50. | Опционально обучается LSTM |
+| SurgCLIP / SurgLaVi | [`src/phase_classification/workflows/surgclip_lstm.py`](src/phase_classification/workflows/surgclip_lstm.py) | Извлечение эмбеддингов клипов; по выбору — классификация фаз без дообучения или обучение сопоставимой LSTM-головы. | Опционально обучается LSTM |
 | Диффузионный модуль уточнения SurgCLIP | [`src/phase_classification/surgclip_diffusion.py`](src/phase_classification/surgclip_diffusion.py) | Энкодеры SurgCLIP заморожены; временная диффузионная сеть подавления шума обучается уточнять оценки фаз. Результаты отложенного теста приведены выше. | Да, по умолчанию 20 эпох |
-| Междатасетная оценка на HeiChole | [`experiments/heichole_eval.py`](experiments/heichole_eval.py) | Оценка модели, обученной на CholecT50, по фазовой разметке HeiChole. | Нет (применение модели/оценка) |
-| Устойчивость к синтетическим искажениям | [`experiments/robustness.py`](experiments/robustness.py) | Оценка предсказаний на тестовой части CholecT50 при синтетических искажениях изображения разной интенсивности. | Нет (применение модели/оценка) |
+| Междатасетная оценка на HeiChole | [`src/phase_classification/workflows/heichole_eval.py`](src/phase_classification/workflows/heichole_eval.py) | Оценка модели, обученной на CholecT50, по фазовой разметке HeiChole. | Нет (применение модели/оценка) |
+| Устойчивость к синтетическим искажениям | [`src/phase_classification/workflows/robustness.py`](src/phase_classification/workflows/robustness.py) | Оценка предсказаний на тестовой части CholecT50 при синтетических искажениях изображения разной интенсивности. | Нет (применение модели/оценка) |
 | Устойчивость к гауссовскому шуму | [`src/phase_classification/noise_eval.py`](src/phase_classification/noise_eval.py) | Оценка модели на чистых данных и при воспроизводимом гауссовском шуме разной силы; результаты указанного запуска приведены выше. | Нет (применение модели/оценка) |
-| Предсказания на EndoScapes | [`experiments/endoscapes_predict.py`](experiments/endoscapes_predict.py) | Формирование предсказаний фаз для выбранных кадров видео EndoScapes; сам скрипт не оценивает их по эталонным меткам фаз. | Нет (только предсказания) |
+| Предсказания на EndoScapes | [`src/phase_classification/workflows/endoscapes_predict.py`](src/phase_classification/workflows/endoscapes_predict.py) | Формирование предсказаний фаз для выбранных кадров видео EndoScapes; сам скрипт не оценивает их по эталонным меткам фаз. | Нет (только предсказания) |
 | Визуализация фаз | [`experiments/visualise_phase.py`](experiments/visualise_phase.py) | Построение временной шкалы предсказаний, сетки кадров с разметкой и CSV с покадровыми предсказаниями. | Нет (визуализация) |
 
 ## Учёт запусков

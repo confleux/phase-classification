@@ -22,8 +22,19 @@ dependencies = [
     "transformers>=4.30,<5",
 ]
 
+[project.optional-dependencies]
+workflows = [
+    "matplotlib>=3.11.1",
+    "opencv-python-headless>=5.0.0.93",
+]
+
 [project.scripts]
 phase-cls = "phase_classification.cli:main"
+phase-cls-endoscapes-predict = "phase_classification.workflows.endoscapes_predict:main"
+phase-cls-heichole-eval = "phase_classification.workflows.heichole_eval:main"
+phase-cls-robustness = "phase_classification.workflows.robustness:main"
+phase-cls-surgvlp = "phase_classification.workflows.surgvlp_lstm:main"
+phase-cls-surgclip = "phase_classification.workflows.surgclip_lstm:main"
 
 [dependency-groups]
 dev = [

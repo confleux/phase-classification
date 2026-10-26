@@ -2,9 +2,9 @@
 """Cross-dataset inference: evaluate a CholecT50-trained model on HeiChole.
 
 Usage:
-    python heichole_eval.py --root /data/heichole \
-        --config ../configs/ms-tcn.yaml \
-        --checkpoint ../outputs/checkpoints/best.pt \
+    uv run phase-cls-heichole-eval --root /data/heichole \
+        --config configs/ms-tcn.yaml \
+        --checkpoint outputs/checkpoints/best.pt \
         [--split test] [--video Hei-Chole25] [--sample-every 25]
 
 Loads one of the repo's trained models (``--config`` selects the architecture
@@ -46,7 +46,6 @@ import argparse
 import csv
 import json
 import re
-import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -56,28 +55,12 @@ import numpy as np
 import torch
 from torchvision import transforms
 
-
-# --- Make the project's src/ package importable regardless of cwd -----------
-def _find_repo_root(start: Path) -> Path:
-    """Walk up from `start` to the folder containing src/phase_classification."""
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "phase_classification").is_dir():
-            return parent
-    raise RuntimeError(
-        "Could not locate the phase_classification repo root "
-        "(no src/phase_classification found above cwd)."
-    )
-
-
-REPO_ROOT = _find_repo_root(Path.cwd())
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
 from phase_classification.engine import resolve_device
 from phase_classification.heads import DEFAULT_NUM_CLASSES
 from phase_classification.loader import load_config
 from phase_classification.metrics import MetricAccumulator
 from phase_classification.models import build_model
+from phase_classification.workflows import PROJECT_ROOT
 
 # HeiChole phase IDs 0-6, aligned with the CholecT50 ``phase`` head order.
 HEICHOLES_PHASES = [
@@ -118,12 +101,12 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--config",
-        default=str(REPO_ROOT / "configs" / "default.yaml"),
+        default=str(PROJECT_ROOT / "configs" / "default.yaml"),
         help="YAML config used to train the checkpoint (selects the architecture).",
     )
     p.add_argument(
         "--checkpoint",
-        default=str(REPO_ROOT / "outputs" / "checkpoints" / "best.pt"),
+        default=str(PROJECT_ROOT / "outputs" / "checkpoints" / "best.pt"),
         help="Path to the trained model weights (.pt/.pth).",
     )
     p.add_argument(
@@ -153,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default=None, help="Override config device (auto|cpu|cuda).")
     p.add_argument(
         "--output",
-        default=str(REPO_ROOT / "outputs" / "heichole-eval"),
+        default=str(PROJECT_ROOT / "outputs" / "heichole-eval"),
         help="Directory for metrics.json and per-video prediction CSVs.",
     )
     return p.parse_args()

@@ -2,7 +2,7 @@
 
 This is a CholecT50 adaptation of the SurgLaVi paper's video linear-probing
 and MS-TCN protocols. It consumes either the flat feature cache written by
-``experiments/surgclip_lstm.py`` or the per-video ``surgclip_embeddings.pt``
+``phase_classification.workflows.surgclip_lstm`` or the per-video ``surgclip_embeddings.pt``
 artifact written by ``phase_classification.surgclip_diffusion``.
 
 Examples::

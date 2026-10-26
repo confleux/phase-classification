@@ -3,7 +3,7 @@
 and optionally train a per-frame LSTM head.
 
 Usage:
-    python surgvlp_lstm.py --dataset-dir /data/cholect50 [options]
+    uv run phase-cls-surgvlp --dataset-dir /data/cholect50 [options]
 
 Pipeline
     Stage 1 (embeddings): loads the official CAMMA SurgVLP vision tower
@@ -29,9 +29,9 @@ dependency. The zero-shot stage additionally ports the ``backbone_text.*``
 (BertEncoder) tower.
 
 Example
-    python surgvlp_lstm.py --dataset-dir /data/cholect50 --model peskavlp
-    python surgvlp_lstm.py --dataset-dir /data/cholect50 --zero-shot
-    python surgvlp_lstm.py --dataset-dir /data/cholect50 \
+    uv run phase-cls-surgvlp --dataset-dir /data/cholect50 --model peskavlp
+    uv run phase-cls-surgvlp --dataset-dir /data/cholect50 --zero-shot
+    uv run phase-cls-surgvlp --dataset-dir /data/cholect50 \
         --embeddings-pt outputs/embeddings/peskavlp-2026-09-18/peskavlp_features.pt
 """
 
@@ -41,7 +41,6 @@ import argparse
 import json
 import os
 import subprocess
-import sys
 import time
 import zipfile
 from pathlib import Path
@@ -56,27 +55,11 @@ from torchvision import models as vision_models
 from torchvision import transforms
 from tqdm import tqdm
 
-
-# --- Make the project's src/ package importable regardless of cwd -----------
-def _find_repo_root(start: Path) -> Path:
-    """Walk up from `start` to the folder containing src/phase_classification."""
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "phase_classification").is_dir():
-            return parent
-    raise RuntimeError(
-        "Could not locate the phase_classification repo root "
-        "(no src/phase_classification found above cwd)."
-    )
-
-
-REPO_ROOT = _find_repo_root(Path.cwd())
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
 from phase_classification.data.cholec_t50 import CholecT50
 from phase_classification.engine import resolve_device
 from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
 from phase_classification.metrics import MetricAccumulator
+from phase_classification.workflows import PROJECT_ROOT
 
 EMBED_DIM = 768
 
@@ -124,7 +107,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--download-root", default=str(Path.home() / ".cache" / "surgvlp"))
     p.add_argument(
         "--embedding-dir",
-        default=str(REPO_ROOT / "outputs" / "embeddings"),
+        default=str(PROJECT_ROOT / "outputs" / "embeddings"),
         help="Where extracted embeddings are saved",
     )
     p.add_argument(
@@ -158,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--device", default="auto", help="auto|cpu|cuda")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--output-dir", default=str(REPO_ROOT / "outputs" / "surgvlp-lstm"))
+    p.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs" / "surgvlp-lstm"))
     return p.parse_args()
 
 

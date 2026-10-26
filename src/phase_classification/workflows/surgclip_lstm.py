@@ -3,7 +3,7 @@
 recognition, and optionally train a per-frame BiLSTM head on CholecT50.
 
 Usage:
-    python surgclip_lstm.py --dataset-dir /data/cholect50 [options]
+    uv run phase-cls-surgclip --dataset-dir /data/cholect50 [options]
 
 Pipeline (mirrors surgvlp_lstm.py, swapping the SurgVLP/PeskaVLP towers for
 SurgCLIP from aperezr20/SurgLaVi, MedIA'26):
@@ -33,9 +33,9 @@ from ``surgvlp_lstm.py`` so results stay directly comparable; only the encoder
 and the zero-shot similarity differ.
 
 Example
-    python surgclip_lstm.py --dataset-dir /data/cholect50 --extract-only
-    python surgclip_lstm.py --dataset-dir /data/cholect50 --zero-shot
-    python surgclip_lstm.py --dataset-dir /data/cholect50 \\
+    uv run phase-cls-surgclip --dataset-dir /data/cholect50 --extract-only
+    uv run phase-cls-surgclip --dataset-dir /data/cholect50 --zero-shot
+    uv run phase-cls-surgclip --dataset-dir /data/cholect50 \\
         --embeddings-pt outputs/embeddings/surgclip-b-.../surgclip-b_features.pt
 """
 
@@ -44,12 +44,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import time
 from collections import deque
 from pathlib import Path
 
 import numpy as np
+import surgclip
 import torch
 import torch.nn.functional as F
 from PIL import Image
@@ -57,32 +57,16 @@ from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-
-# --- Make the project's src/ package and the sibling experiment importable ---
-def _find_repo_root(start: Path) -> Path:
-    """Walk up from `start` to the folder containing src/phase_classification."""
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "phase_classification").is_dir():
-            return parent
-    raise RuntimeError(
-        "Could not locate the phase_classification repo root "
-        "(no src/phase_classification found above cwd)."
-    )
-
-
-REPO_ROOT = _find_repo_root(Path.cwd())
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
-_HERE = str(Path(__file__).resolve().parent)
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
-
-import surgclip
+from phase_classification.data.cholec_t50 import CholecT50
+from phase_classification.engine import resolve_device
+from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
+from phase_classification.metrics import MetricAccumulator
+from phase_classification.models.temporal_adapter import ResidualTemporalAdapter
+from phase_classification.workflows import PROJECT_ROOT
 
 # Shared pieces from the SurgVLP experiment (feature datasets, BiLSTM head,
 # video-coherent batch sampler, epoch loop, label helpers).
-from surgvlp_lstm import (
+from .surgvlp_lstm import (
     PHASE_NAMES,
     CholecT50Feature,
     PeskaVLPBiLSTM,
@@ -94,12 +78,6 @@ from surgvlp_lstm import (
     collate_fn,
     run_epoch,
 )
-
-from phase_classification.data.cholec_t50 import CholecT50
-from phase_classification.engine import resolve_device
-from phase_classification.heads import DEFAULT_NUM_CLASSES, HEAD_TUPLE_INDEX
-from phase_classification.metrics import MetricAccumulator
-from phase_classification.models.temporal_adapter import ResidualTemporalAdapter
 
 MODEL_NAME_MAP = {
     "surgclip-b": "SurgCLIP-B",
@@ -150,7 +128,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--embedding-dir",
-        default=str(REPO_ROOT / "outputs" / "embeddings"),
+        default=str(PROJECT_ROOT / "outputs" / "embeddings"),
         help="Where extracted embeddings are saved",
     )
     p.add_argument(
@@ -195,7 +173,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--device", default="auto", help="auto|cpu|cuda")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--output-dir", default=str(REPO_ROOT / "outputs" / "surgclip-lstm"))
+    p.add_argument("--output-dir", default=str(PROJECT_ROOT / "outputs" / "surgclip-lstm"))
     return p.parse_args()
 
 

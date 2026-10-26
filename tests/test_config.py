@@ -85,6 +85,19 @@ class TestMlflowParams:
         assert "mlflow.aws_access_key_id" not in params
         assert "mlflow.aws_secret_access_key" not in params
 
+    def test_public_config_redacts_secrets(self):
+        cfg = make_cfg(
+            {
+                "mlflow": {
+                    "aws_access_key_id": "local-user",
+                    "aws_secret_access_key": "do-not-display",
+                }
+            }
+        )
+        public_config = cfg.to_public_dict()
+        assert public_config["mlflow"]["aws_access_key_id"] == "[REDACTED]"
+        assert public_config["mlflow"]["aws_secret_access_key"] == "[REDACTED]"
+
     def test_lists_comma_joined(self):
         cfg = make_cfg({"training": {"heads": ["phase", "tool"]}})
         assert cfg.to_mlflow_params()["training.heads"] == "phase,tool"

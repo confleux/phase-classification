@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 
 import torch
@@ -10,18 +9,16 @@ from conftest import StubClassifier
 from torch.utils.data import DataLoader, TensorDataset
 
 from phase_classification.config import ExperimentConfig
-from phase_classification.config.mlflow import MLflowConfig
 from phase_classification.data.dataloaders import DataLoaders, build_test_loaders
 from phase_classification.metrics import LossAccumulator
 from phase_classification.run import (
     _count_parameters,
-    _git_commit_hash,
     _higher_is_better,
     _is_better,
     _loss_key,
     _losses,
-    _set_s3_env,
 )
+from phase_classification.tracking import _git_commit_hash
 
 
 class TestIsBetter:
@@ -45,33 +42,6 @@ class TestHigherIsBetter:
 def test_git_commit_hash_shape():
     commit = _git_commit_hash()
     assert commit is None or re.fullmatch(r"[0-9a-f]{40}", commit)
-
-
-def test_set_s3_env(monkeypatch):
-    for name in (
-        "MLFLOW_S3_ENDPOINT_URL",
-        "AWS_ACCESS_KEY_ID",
-        "AWS_SECRET_ACCESS_KEY",
-        "AWS_DEFAULT_REGION",
-    ):
-        monkeypatch.delenv(name, raising=False)
-    cfg = MLflowConfig(
-        s3_endpoint_url="http://minio:9000",
-        aws_access_key_id="minio",
-        aws_secret_access_key="miniopass",
-        aws_region="us-east-1",
-    )
-    _set_s3_env(cfg)
-    assert os.environ["MLFLOW_S3_ENDPOINT_URL"] == "http://minio:9000"
-    assert os.environ["AWS_ACCESS_KEY_ID"] == "minio"
-    assert os.environ["AWS_SECRET_ACCESS_KEY"] == "miniopass"
-
-
-def test_set_s3_env_env_wins(monkeypatch):
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "from-env")
-    cfg = MLflowConfig(aws_access_key_id="from-config")
-    _set_s3_env(cfg)
-    assert os.environ["AWS_ACCESS_KEY_ID"] == "from-env"
 
 
 def test_build_test_loaders_wraps_each_video_dataset():

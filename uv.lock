@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.14"
 
 [[package]]
@@ -1550,6 +1550,12 @@ dependencies = [
     { name = "transformers" },
 ]
 
+[package.optional-dependencies]
+workflows = [
+    { name = "matplotlib" },
+    { name = "opencv-python-headless" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "opencv-python-headless" },
@@ -1560,7 +1566,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.43.73" },
+    { name = "matplotlib", marker = "extra == 'workflows'", specifier = ">=3.11.1" },
     { name = "mlflow", specifier = ">=3.15.1" },
+    { name = "opencv-python-headless", marker = "extra == 'workflows'", specifier = ">=5.0.0.93" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pydantic", specifier = ">=2" },
     { name = "pyyaml" },
@@ -1571,6 +1579,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.70.0" },
     { name = "transformers", specifier = ">=4.30,<5" },
 ]
+provides-extras = ["workflows"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -91,13 +91,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
 def cmd_inspect(args: argparse.Namespace) -> None:
     cfg = _load(args.config)
     if args.format == "json":
-        print(json.dumps(cfg.model_dump(), indent=2, default=str))
+        print(json.dumps(cfg.to_public_dict(), indent=2, default=str))
     elif args.format == "mlflow":
         print(json.dumps(cfg.to_mlflow_params(), indent=2))
     else:
         import yaml
 
-        print(yaml.safe_dump(cfg.model_dump(mode="json"), sort_keys=False))
+        print(yaml.safe_dump(cfg.to_public_dict(), sort_keys=False))
 
 
 def cmd_build_dataloaders(args: argparse.Namespace) -> None:

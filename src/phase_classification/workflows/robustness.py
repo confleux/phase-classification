@@ -12,7 +12,7 @@ Degradations are implemented in raw pixel space with Numpy + OpenCV only
 pipeline, so the model sees exactly the same preprocessing as at training time.
 
 Usage:
-    python robustness.py [--config CONFIG] [--checkpoint CKPT]
+    uv run phase-cls-robustness [--config CONFIG] [--checkpoint CKPT]
                          [--artifacts gaussian_blur,noise] [--levels 6]
                          [--max-videos N] [--batch-size 32] [--output DIR]
 """
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import sys
 from pathlib import Path
 
 import cv2
@@ -34,29 +33,13 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from torchvision import transforms
 
-
-# --- Make the project's src/ package importable regardless of cwd -----------
-def _find_repo_root(start: Path) -> Path:
-    """Walk up from `start` to the folder containing src/phase_classification."""
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "phase_classification").is_dir():
-            return parent
-    raise RuntimeError(
-        "Could not locate the phase_classification repo root "
-        "(no src/phase_classification found above cwd)."
-    )
-
-
-REPO_ROOT = _find_repo_root(Path.cwd())
-if str(REPO_ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "src"))
-
 from phase_classification.data.cholec_t50 import CholecT50
 from phase_classification.engine import resolve_device
 from phase_classification.heads import SINGLE_LABEL_HEADS, head_index
 from phase_classification.loader import load_config
 from phase_classification.metrics import MetricAccumulator
 from phase_classification.models import build_model
+from phase_classification.workflows import PROJECT_ROOT
 
 # Canonical metric set for this experiment (aggregates for curves, per-class for
 # the per-class accuracy heatmap). Matches the default `validation.metrics`.
@@ -402,12 +385,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--config",
-        default=str(REPO_ROOT / "configs" / "default.yaml"),
+        default=str(PROJECT_ROOT / "configs" / "default.yaml"),
         help="YAML config used for training",
     )
     p.add_argument(
         "--checkpoint",
-        default=str(REPO_ROOT / "outputs" / "checkpoints" / "best.pt"),
+        default=str(PROJECT_ROOT / "outputs" / "checkpoints" / "best.pt"),
         help="Path to the trained checkpoint (.pt/.pth)",
     )
     p.add_argument(
@@ -431,7 +414,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32, help="Inference batch size")
     p.add_argument(
         "--output",
-        default=str(REPO_ROOT / "outputs" / "robustness"),
+        default=str(PROJECT_ROOT / "outputs" / "robustness"),
         help="Output directory for plots and CSV",
     )
     return p.parse_args()

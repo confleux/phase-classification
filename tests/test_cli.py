@@ -45,6 +45,20 @@ def test_inspect_json(config_file, capsys):
     assert data["dataset"]["root_dir"] == "/tmp/data"
 
 
+def test_inspect_json_redacts_s3_credentials(tmp_path, capsys):
+    path = tmp_path / "secrets.yaml"
+    path.write_text(
+        "dataset:\n  root_dir: /tmp/data\n"
+        "mlflow:\n"
+        "  aws_access_key_id: local-user\n"
+        "  aws_secret_access_key: do-not-display\n"
+    )
+    main(["inspect", str(path), "--format", "json"])
+    data = json.loads(capsys.readouterr().out)
+    assert data["mlflow"]["aws_access_key_id"] == "[REDACTED]"
+    assert data["mlflow"]["aws_secret_access_key"] == "[REDACTED]"
+
+
 def test_inspect_mlflow(config_file, capsys):
     main(["inspect", str(config_file), "--format", "mlflow"])
     params = json.loads(capsys.readouterr().out)

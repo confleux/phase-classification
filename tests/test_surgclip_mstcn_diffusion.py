@@ -158,7 +158,7 @@ def test_run_lifecycle_dispatches_surgclip_mstcn_diffusion(tmp_path, monkeypatch
         lambda cfg, dl, device: {"test_refined_phase_f1_macro": 0.8},
     )
     ended = []
-    monkeypatch.setattr(run_module, "_end_mlflow_run", lambda status: ended.append(status))
+    monkeypatch.setattr(run_module, "end_run", lambda status: ended.append(status))
 
     result = run_module._run_lifecycle(config)
 

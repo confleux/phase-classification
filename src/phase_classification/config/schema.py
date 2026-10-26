@@ -33,16 +33,36 @@ class ExperimentConfig(StrictModel):
         for name, model in self.model_dump().items():
             if isinstance(model, dict):
                 for k, v in model.items():
-                    if _is_sensitive(name, k):
+                    if _is_sensitive(k):
                         continue
                     flat[f"{name}.{k}"] = _stringify(v)
             else:
                 flat[name] = _stringify(model)
         return flat
 
+    def to_public_dict(self) -> dict[str, object]:
+        """Return a JSON-compatible config representation with secrets masked."""
+        return _redact_sensitive(self.model_dump(mode="json"))
 
-def _is_sensitive(section: str, key: str) -> bool:
-    return section == "mlflow" and key in {"aws_access_key_id", "aws_secret_access_key"}
+
+def _is_sensitive(key: str) -> bool:
+    normalized = key.lower()
+    return (
+        "secret" in normalized
+        or normalized.endswith(("_password", "_token"))
+        or normalized in {"password", "token", "aws_access_key_id"}
+    )
+
+
+def _redact_sensitive(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if _is_sensitive(key) else _redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_sensitive(item) for item in value]
+    return value
 
 
 def _stringify(value: object) -> str:

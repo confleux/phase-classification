@@ -35,6 +35,32 @@ class TestLoadConfig:
         cfg = load_config(path)
         assert cfg.dataset.root_dir == Path("/tmp")
 
+    def test_environment_variables_override_yaml_defaults(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test-user")
+        path = write_yaml(
+            tmp_path,
+            "dataset:\n"
+            "  root_dir: /tmp\n"
+            "mlflow:\n"
+            "  s3_endpoint_url: ${MLFLOW_S3_ENDPOINT_URL:-http://localhost:9000}\n"
+            "  aws_access_key_id: ${AWS_ACCESS_KEY_ID:-minio}\n"
+            "  aws_secret_access_key: ${AWS_SECRET_ACCESS_KEY:-miniopass}\n",
+        )
+        cfg = load_config(path)
+        assert cfg.mlflow.s3_endpoint_url == "http://localhost:9000"
+        assert cfg.mlflow.aws_access_key_id == "test-user"
+        assert cfg.mlflow.aws_secret_access_key == "miniopass"
+
+    def test_missing_required_environment_variable(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("REQUIRED_CONFIG_VALUE", raising=False)
+        path = write_yaml(
+            tmp_path,
+            "dataset:\n  root_dir: /tmp\n"
+            "mlflow:\n  tracking_uri: ${REQUIRED_CONFIG_VALUE}\n",
+        )
+        with pytest.raises(ConfigLoadError, match="REQUIRED_CONFIG_VALUE"):
+            load_config(path)
+
 
 class TestCheckPaths:
     def test_missing_root(self, tmp_path):

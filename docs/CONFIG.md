@@ -340,7 +340,25 @@ model artifact to the S3 artifact store (the docker-compose `.env` only sets
 credentials for the MLflow *server* container). Values are injected as
 environment variables at run start; existing environment variables take
 precedence, and `aws_access_key_id`/`aws_secret_access_key` are **never logged**
-as MLflow params.
+as MLflow params. The bundled YAML examples use `${NAME:-default}` expansion:
+environment values override the local MinIO defaults (`http://localhost:9000`,
+`minio` / `miniopass`, `us-east-1`). These defaults are for local development
+only. For a real S3 service, set `MLFLOW_S3_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, and optionally `AWS_DEFAULT_REGION` in the environment;
+do not commit production credentials. Environment expansion applies to YAML
+string values. `phase-cls inspect` masks access keys, secrets, passwords, and
+tokens in its YAML and JSON output.
+
+For example, with the bundled local MinIO service:
+
+```bash
+cd mlflow && docker compose up -d
+cd ..
+uv run phase-cls validate-config configs/default.yaml
+```
+
+If the MinIO credentials are changed in `mlflow/.env`, export the matching
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` in the training process as well.
 
 Every run automatically logs:
 - all config params (`<section>.<field>` → value),

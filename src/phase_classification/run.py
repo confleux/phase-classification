@@ -10,9 +10,6 @@ A single :func:`run_training` call performs the complete lifecycle for one run:
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -29,58 +26,11 @@ from phase_classification.data.dataloaders import (
 from phase_classification.engine import Trainer, resolve_device
 from phase_classification.metrics import LossAccumulator, MetricAccumulator
 from phase_classification.models import build_model
+from phase_classification.tracking import end_run, start_run
 
 
 class RunError(Exception):
     """Raised when a training run cannot start or completes abnormally."""
-
-
-def _git_commit_hash() -> str | None:
-    """Return the current git HEAD commit hash, or None if unavailable."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-    commit = result.stdout.strip()
-    return commit or None
-
-
-def _start_mlflow(cfg: ExperimentConfig) -> None:
-    _set_s3_env(cfg.mlflow)
-    if cfg.mlflow.tracking_uri:
-        mlflow.set_tracking_uri(cfg.mlflow.tracking_uri)
-    mlflow.set_experiment(cfg.mlflow.experiment_name)
-    mlflow.start_run(run_name=cfg.mlflow.run_name, nested=False)
-    for key, value in cfg.mlflow.tags.items():
-        mlflow.set_tag(key, value)
-    commit_hash = _git_commit_hash()
-    if commit_hash is not None:
-        mlflow.set_tag("gitcommithash", commit_hash)
-    mlflow.log_params(cfg.to_mlflow_params())
-
-
-def _set_s3_env(mlflow_cfg) -> None:
-    """Expose S3/MinIO client credentials to boto3 (env vars win over config).
-
-    Without these the training process cannot upload the model artifact to the
-    S3 artifact store and fails with ``NoCredentialsError``.
-    """
-    for env_name, value in (
-        ("MLFLOW_S3_ENDPOINT_URL", mlflow_cfg.s3_endpoint_url),
-        ("AWS_ACCESS_KEY_ID", mlflow_cfg.aws_access_key_id),
-        ("AWS_SECRET_ACCESS_KEY", mlflow_cfg.aws_secret_access_key),
-        ("AWS_DEFAULT_REGION", mlflow_cfg.aws_region),
-    ):
-        if value:
-            os.environ.setdefault(env_name, value)
 
 
 def _loss_key(name: str) -> str:
@@ -136,22 +86,13 @@ def _epoch_metrics(
     return {**_losses(loss_accumulator, prefix), **metrics}
 
 
-def _end_mlflow_run(status: str) -> None:
-    """End the active MLflow run with the given status (if any run is active)."""
-    try:
-        if mlflow.active_run() is not None:
-            mlflow.end_run(status=status)
-    except mlflow.exceptions.MlflowException as exc:
-        print(f"warning: failed to finalize MLflow run ({exc})", file=sys.stderr)
-
-
 def run_training(cfg: ExperimentConfig) -> dict[str, float]:
     """Execute the full training/validation/test lifecycle, logging to MLflow."""
-    _start_mlflow(cfg)
+    start_run(cfg)
     try:
         return _run_lifecycle(cfg)
     except Exception:
-        _end_mlflow_run("FAILED")
+        end_run("FAILED")
         raise
 
 
@@ -332,7 +273,7 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
         )
 
         test_metrics = run_surgclip_mstcn_diffusion(cfg, dl, device)
-        _end_mlflow_run("FINISHED")
+        end_run("FINISHED")
         return test_metrics
 
     model = build_model(cfg.model, heads=cfg.training.heads)
@@ -372,7 +313,7 @@ def _run_lifecycle(cfg: ExperimentConfig) -> dict[str, float]:
 
     _save_model_to_mlflow(cfg, model, best_state)
 
-    _end_mlflow_run("FINISHED")
+    end_run("FINISHED")
     return test_metrics
 
 
